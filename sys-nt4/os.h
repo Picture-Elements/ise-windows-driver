@@ -56,9 +56,9 @@ extern void* alloc_memory(unsigned long s);
 #define free_memory(m,s) MmFreeContiguousMemory((m))
 
 #define alloc_page() alloc_memory(PAGE_SIZE)
-#define free_page(x) free_memory((x),PAGE_SIZE)
+#define free_page(x) free_memory((void*)(x),PAGE_SIZE)
 
-#define virt_to_bus(x) ((MmGetPhysicalAddress((x))).LowPart)
+#define virt_to_bus(x) ((MmGetPhysicalAddress((void*)(x))).LowPart)
 
 /* Define some compatibility constants. */
 # define EBUSY 1
@@ -178,6 +178,10 @@ extern void ucr_deinit_nt_frame_pool();
 
 /*
  * $Log$
+ * Revision 1.2  2001/04/03 01:56:05  steve
+ *  Simplify the code path for pending operations, and
+ *  use buffered I/O instead of direct.
+ *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
  *
@@ -186,80 +190,6 @@ extern void ucr_deinit_nt_frame_pool();
  *
  * Revision 1.10  1999/07/15 16:37:37  steve
  *  isolate read and write activities under NT.
- *
- * Revision 1.9  1999/07/15 02:11:12  steve
- *  Count pending IRPs.
- *
- * Revision 1.8  1999/03/21 01:36:08  steve
- *  Fix synchronization of IoMarpIrpPending.
- *
- * Revision 1.7  1998/09/29 00:39:36  steve
- *  Add os specific state dump.
- *
- * Revision 1.6  1998/09/23 23:12:57  steve
- *  Better detect diagnose broken interrupts.
- *
- * Revision 1.5  1998/07/11 18:56:51  steve
- *  Frames for multiple devices.
- *
- * Revision 1.4  1998/06/18 20:32:41  steve
- *  memcpy_fromio implementation
- *
- * Revision 1.3  1998/05/30 18:59:43  steve
- *  Allocate contiguous memory.
- *
- * Revision 1.2  1998/05/29 18:11:22  steve
- *  Proper cancel/abort behavior for NT.
- *
- * Revision 1.1  1998/05/28 22:53:02  steve
- *  NT port.
- *
- * Revision 1.13  1998/04/25 05:05:26  steve
- *  Preallocate frame space under NT.
- *
- * Revision 1.12  1998/04/22 19:06:57  steve
- *  Some write cancel support.
- *
- * Revision 1.11  1998/04/18 02:43:54  steve
- *  Fix trouble removing device lines at unload.
- *  Add support for read cancellation under NT.
- *  isecons device (nt only) now throws away old
- *  data instead of truncating new.
- *
- * Revision 1.10  1998/03/23 03:30:24  steve
- *  non-blocking reading under NT.
- *
- * Revision 1.9  1998/03/23 00:07:38  steve
- *  initial frame support for winnt.
- *
- * Revision 1.8  1998/03/21 21:06:43  steve
- *  Rearrange frame handling code.
- *
- * Revision 1.7  1997/12/07 02:16:42  steve
- *  Fix NT blocking problems, redo the console to
- *  not block and keep a limited buffer, trace the
- *  ucrx operations, and ucrx operations work on NT.
- *
- * Revision 1.6  1997/12/06 05:15:51  steve
- *  Add the control device to the NT port.
- *
- * Revision 1.5  1997/12/02 02:29:03  steve
- *  Add support for ISE board reset.
- *
- * Revision 1.4  1997/11/16 11:37:43  steve
- *  Make NT driver asynchronous.
- *
- * Revision 1.3  1997/11/11 11:19:46  steve
- *  Add support for frames.
- *
- * Revision 1.2  1997/09/12 05:18:06  steve
- *  Port to linux 2.1
- *
- * Revision 1.1  1997/09/11 21:58:36  steve
- *  Port the uCR device driver to Windows NT,
- *  make the configure select the target board
- *  and target host interface headers.
- *
  */
 
 

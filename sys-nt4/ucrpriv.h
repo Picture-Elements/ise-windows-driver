@@ -212,8 +212,13 @@ extern void cancel_time_delay(struct timer_list*tim);
 
 extern unsigned debug_flag;
 
-extern int wait_for_dispatch (struct Instance*xsp, struct ChannelData*xpd,
-			      struct ccp_t*ccp, unsigned long mask);
+/*
+ * When the driver discovers its time to mark the IRP pending, this
+ * function does it SMP safely. It should be done when interrupts are
+ * off as well
+ */
+extern void add_to_pending(struct ccp_t*ccp);
+
 
 /*
  * These are the ucr functions for performing the various generic
@@ -254,6 +259,10 @@ extern void ucr_clear_instance(struct Instance*xsp);
 
 /*
  * $Log$
+ * Revision 1.2  2001/04/03 01:56:05  steve
+ *  Simplify the code path for pending operations, and
+ *  use buffered I/O instead of direct.
+ *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
  *

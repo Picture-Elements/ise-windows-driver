@@ -82,39 +82,19 @@ static void dev_cancel_irp(DEVICE_OBJECT*dev, IRP*irp)
       IoCompleteRequest(irp, IO_NO_INCREMENT);
 }
 
-/*
- * Wait for dispatch will not actually wait, but will place the IRP on
- * the passed pend_list. It will mark that this has been done by
- * clearing the pend_list pointer.
- *
- * If there is no pend_list, then do block.
- */
-int wait_for_dispatch(struct Instance*xsp, struct ChannelData*xpd,
-		      struct ccp_t*ccp, unsigned long mask)
+void add_to_pending(struct ccp_t*ccp)
 {
-      if (debug_flag & UCR_TRACE_CHAN)
-	    printk(DEVICE_NAME "%u.%u (d): Wait for dispatch. "
-		   "pend_list=%p\n", xsp->number, xpd->channel,
-		   ccp->pend_list);
+      KIRQL save_irql;
 
-      if (ccp->pend_list) {
-	    KIRQL save_irql;
-	    IoAcquireCancelSpinLock(&save_irql);
-	    InsertTailList(ccp->pend_list, &ccp->irp->Tail.Overlay.ListEntry);
-	    IoSetCancelRoutine(ccp->irp, dev_cancel_irp);
-	    if (! ccp->pend_flag) {
-		IoMarkIrpPending(ccp->irp);
-		ccp->pend_flag = TRUE;
-	    }
-	    IoReleaseCancelSpinLock(save_irql);
-	    ccp->pend_list = 0;
-	    return -EINTR;
+      IoAcquireCancelSpinLock(&save_irql);
+      InsertTailList(ccp->pend_list, &ccp->irp->Tail.Overlay.ListEntry);
+      IoSetCancelRoutine(ccp->irp, dev_cancel_irp);
+      if (! ccp->pend_flag) {
+	    IoMarkIrpPending(ccp->irp);
+	    ccp->pend_flag = TRUE;
       }
-
-      printk(DEVICE_NAME "%u.%u (d): Wait_for_dispatch sleeping "
-	     "instead of pending?\n", xsp->number, xpd->channel);
-
-      return atomic_sleep_on(xsp, mask, &xsp->dispatch_sync);
+      IoReleaseCancelSpinLock(save_irql);
+      ccp->pend_list = 0;
 }
 
 
@@ -210,27 +190,22 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp, BOOLEAN retry_flag)
       }
 
 
-      base = MmGetSystemAddressForMdl(irp->MdlAddress);
+      base = irp->AssociatedIrp.SystemBuffer;
       base += stp->Parameters.Read.ByteOffset.LowPart;
       cnt = stp->Parameters.Read.Length;
       cnt -= stp->Parameters.Read.ByteOffset.LowPart;
 
+	/* Call ucr_read to get things started. If it does something,
+	   then it returns >0. If it can't read anything, and this
+	   call must block, then it return -EINTR and it is up to me
+	   to mark it pending and arrange for a restart. */
       ccp->irp = irp;
       ccp->pend_list = &xsp->pending_read_irps;
       rc = ucr_read(xsp, xpd, ccp, base, cnt, flag);
 
-	/* Handle being placed on the pending list. */
-      if (ccp->pend_list == 0) {
-	    if (rc > 0) stp->Parameters.Read.ByteOffset.LowPart += rc;
-
-	    if (debug_flag & UCR_TRACE_CHAN)
-		  printk(DEVICE_NAME "%u.%u (d): read IRP marked pending\n",
-			 xsp->number, xpd->channel);
-
+      if (rc == -EINTR)
 	    return STATUS_PENDING;
-      }
 
-      ccp->pend_list = 0;
 
       if (rc >= 0) {
 	    irp->IoStatus.Status = STATUS_SUCCESS;
@@ -267,33 +242,37 @@ NTSTATUS dev_write(DEVICE_OBJECT*dev, IRP*irp, BOOLEAN retry_flag)
 	    ccp->pend_flag = FALSE;
       }
 
+      base = irp->AssociatedIrp.SystemBuffer;
+      base += stp->Parameters.Write.ByteOffset.LowPart;
+
+	/* continue writing so long as there are bytes yet to be
+	   delivered. This may take a few iterations as we cross
+	   boundaries. If we get to a point where we would block, then
+	   the ucr_write will return -EINTR. In that case, mark the
+	   IRP pending and go away. */
       ccp->irp = irp;
       ccp->pend_list = &xsp->pending_write_irps;
+      while (stp->Parameters.Write.ByteOffset.LowPart
+	     < stp->Parameters.Write.Length) {
 
-      base = MmGetSystemAddressForMdl(irp->MdlAddress);
-      base += stp->Parameters.Write.ByteOffset.LowPart;
-      cnt = stp->Parameters.Write.Length;
-      cnt -= stp->Parameters.Write.ByteOffset.LowPart;
+	    cnt = stp->Parameters.Write.Length;
+	    cnt -= stp->Parameters.Write.ByteOffset.LowPart;
+	    rc = ucr_write(xsp, xpd, ccp, base, cnt);
 
-      rc = ucr_write(xsp, xpd, ccp, base, cnt);
+	    if (rc == -EINTR)
+		  return STATUS_PENDING;
 
-	/* If I got put onto the pending list, the pend_list pointer
-	   will have been cleared. */
-      if (ccp->pend_list == 0) {
-	    if (rc > 0) stp->Parameters.Write.ByteOffset.LowPart += rc;
-
-	    if (debug_flag & UCR_TRACE_CHAN)
-		  printk(DEVICE_NAME "%u.%u (d): write IRP marked pending\n",
-			 xsp->number, xpd->channel);
-
-	    return STATUS_PENDING;
+	    if (rc > 0) {
+		  stp->Parameters.Write.ByteOffset.LowPart += rc;
+		  base += rc;
+	    }
       }
 
-      ccp->pend_list = 0;
+
       if (rc >= 0) {
 	    irp->IoStatus.Status = STATUS_SUCCESS;
 	    irp->IoStatus.Information
-		  = rc + stp->Parameters.Write.ByteOffset.LowPart;
+		  = stp->Parameters.Write.ByteOffset.LowPart;
 
       } else {
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
@@ -443,21 +422,12 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp, BOOLEAN retry_flag)
 
 	  case UCR_FLUSH:
 	  case UCR_SYNC:
-	      /* Certain of the UCR ioctls may be canceled. A little
-		 bit of overhead is needed to support that behavior. */
 	    ccp->irp = irp;
 	    ccp->pend_list = &xsp->pending_ioctl_irps;
-	    if (! retry_flag) ccp->pend_flag = FALSE;
 	    rc = ucr_ioctl(xsp, xpd, ccp, cmd, 0);
-	    if (ccp->pend_list == 0) {
-		  if (debug_flag & UCR_TRACE_CHAN)
-			printk(DEVICE_NAME "%u.%u (d): ioctl(%x) IRP "
-			       "marked pending\n", xsp->number,
-			       xpd->channel, cmd);
-
+	    if (rc == -EINTR)
 		  return STATUS_PENDING;
-	    }
-	    ccp->pend_list = 0;
+
 	    break;
 
 	  default:
@@ -711,7 +681,7 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 			      FILE_DEVICE_ISE, 0, FALSE, &dev);
       if (! NT_SUCCESS(status)) return status;
 
-      dev->Flags |= DO_DIRECT_IO;
+      dev->Flags |= DO_BUFFERED_IO;
 
       xsp = (struct Instance*)dev->DeviceExtension;
       ucr_init_instance(xsp);
@@ -855,6 +825,10 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 
 /*
  * $Log$
+ * Revision 1.2  2001/04/03 01:56:05  steve
+ *  Simplify the code path for pending operations, and
+ *  use buffered I/O instead of direct.
+ *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
  *

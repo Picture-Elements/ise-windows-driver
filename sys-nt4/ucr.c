@@ -336,12 +336,13 @@ static int wait_for_write_ring(struct Instance*xsp, struct ChannelData*xpd,
 			 " in write ring.\n", xsp->number,
 			 xpd->channel);
 
-	    rc = wait_for_dispatch(xsp, xpd, ccp, mask);
-	    if (rc == -EINTR) {
-		  dev_unmask_irqs(xsp->dev, mask);
-		  return -EINTR;
-	    }
+	    add_to_pending(ccp);
+
+	      /* NT by definition gets an -EINTR here. */
+	    dev_unmask_irqs(xsp->dev, mask);
+	    return -EINTR;
       }
+
       dev_unmask_irqs(xsp->dev, mask);
 
       return 0;
@@ -360,13 +361,10 @@ static int wait_for_read_data(struct Instance*xsp, struct ChannelData*xpd,
 
       const unsigned long mask = dev_mask_irqs(xsp->dev);
 
-      while (CHANNEL_IN_EMPTY(xpd)) {
-
-	    if (wait_for_dispatch(xsp, xpd, ccp, mask) == -EINTR) {
-		  dev_unmask_irqs(xsp->dev, mask);
-		  return -EINTR;
-	    }
-
+      if (CHANNEL_IN_EMPTY(xpd)) {
+	    add_to_pending(ccp);
+	    dev_unmask_irqs(xsp->dev, mask);
+	    return -EINTR;
       }
 
       dev_unmask_irqs(xsp->dev, mask);
@@ -451,25 +449,18 @@ static int sync_channel(struct Instance*xsp,
 
       while (xpd->table->first_out_idx != xpd->table->next_out_idx) {
 
-	    int rc;
-
 	    if (debug_flag & UCR_TRACE_CHAN)
 		  printk(DEVICE_NAME "%u.%u (d): wait for data"
 			 " in write ring to be consumed.\n",
 			 xsp->number, xpd->channel);
 
-	    rc = wait_for_dispatch(xsp, xpd, ccp, mask);
-	    if (rc == -EINTR) {
-		  dev_unmask_irqs(xsp->dev, mask);
-		  goto signalled;
-	    }
+	    add_to_pending(ccp);
+	    dev_unmask_irqs(xsp->dev, mask);
+	    return -EINTR;
       }
 
       dev_unmask_irqs(xsp->dev, mask);
       return 0;
-
- signalled:
-      return -EINTR;
 }
 
 static long do_sync(struct Instance*xsp,
@@ -672,14 +663,14 @@ long ucr_read(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
 		       flush the write buffer. I may be blocking on a
 		       response to something in the write buffer! */
 		  if (flush_channel(xsp, xpd, ccp) == -EINTR)
-			goto signalled;
+			return -EINTR;
 
 		    /* Finally, block. If I exit and an interrupted,
 		       jump out of the read. Note that this function
 		       will recheck for the presence of read data in
 		       an interrupt safe way. */
 		  if (wait_for_read_data(xsp, xpd, ccp) == -EINTR)
-			goto signalled;
+			return -EINTR;
 
 	    }
 
@@ -723,17 +714,6 @@ long ucr_read(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
 
       return count;
 
-	/* Handle being interrupted (or on NT being marked pending)
-	   with no bytes transferred. If any bytes were returned, even
-	   if not enough, then the read will return partial results
-	   instead of this error. */
-signalled:
-      if (debug_flag & UCR_TRACE_CHAN)
-	    printk(DEVICE_NAME "%u.%u (d): ucr_read interrupted "
-		   "after %u bytes\n", xsp->number, xpd->channel,
-		   count - tcount);
-
-      return -EINTR;
 }
 
 
@@ -784,8 +764,11 @@ long ucr_write(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
 		 for this message. */
 	    if (xpd->out_off == xpd->table->out[idx].count) {
 
+		  if (tcount < count)
+			return count - tcount;
+
 		  if (flush_channel(xsp, xpd, ccp) == -EINTR)
-			goto signalled;
+			return -EINTR;
 	    }
       }
 
@@ -795,26 +778,6 @@ long ucr_write(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
 		   xsp->number, xpd->channel, count);
 
       return count;
-
-
-signalled:
-	/* If waiting for buffer space for the output is interrupted
-	   by a signal, exit here. It is also possible that the block
-	   in the flush_channel was interrupted, but that is OK. The
-	   data that I wrote is written, and a later write or UCR_FLUSH
-	   will complete the flush_channel. At any rate, the data *is*
-	   written so include it in the write count.
-
-	   XXXX What if there are no writes or flushes after this?
-	   There should be because the caller got a partial read
-	   (otherwise there would be no flush) but a broken app? XXXX */
-
-      if (debug_flag & UCR_TRACE_CHAN)
-	    printk(DEVICE_NAME "%u.%u (d): ucr_write interrupted\n",
-		   xsp->number, xpd->channel);
-
-      if (count == tcount) return -EINTR;
-      else return count - tcount;
 }
 
 int ucr_ioctl(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
@@ -916,6 +879,10 @@ int ucr_irq(struct Instance*xsp)
 
 /*
  * $Log$
+ * Revision 1.2  2001/04/03 01:56:05  steve
+ *  Simplify the code path for pending operations, and
+ *  use buffered I/O instead of direct.
+ *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
  *
