@@ -425,6 +425,8 @@ static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
       return STATUS_PENDING;
 }
 
+static NTSTATUS make_frame_complete(struct instance_t*xsp, IRP*irp);
+
 static NTSTATUS dev_ioctl_make_frame(DEVICE_OBJECT*dev, IRP*irp)
 {
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
@@ -433,7 +435,27 @@ static NTSTATUS dev_ioctl_make_frame(DEVICE_OBJECT*dev, IRP*irp)
 
       unsigned long arg, fidx, fsiz;
 
+      struct root_table*newroot;
+      PHYSICAL_ADDRESS newrootl;
+
       if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof arg) {
+	    printk("ise%u.%u: UCR_MAKE_FRAME: input size (%u) != %u\n",
+		   xsp->id, xpd->channel,
+		   stp->Parameters.DeviceIoControl.InputBufferLength,
+		   sizeof arg);
+
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      if (stp->Parameters.DeviceIoControl.OutputBufferLength != sizeof arg) {
+	    printk("ise%u.%u: UCR_MAKE_FRAME: output size (%u) != %u\n",
+		   xsp->id, xpd->channel,
+		   stp->Parameters.DeviceIoControl.OutputBufferLength,
+		   sizeof arg);
+
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -446,19 +468,40 @@ static NTSTATUS dev_ioctl_make_frame(DEVICE_OBJECT*dev, IRP*irp)
 
       fsiz = ise_make_frame(xsp, fidx, fsiz);
 
-      if (stp->Parameters.DeviceIoControl.OutputBufferLength >= sizeof arg) {
-	    arg = fsiz;
-	    *(unsigned long*)irp->AssociatedIrp.SystemBuffer = arg;
-	    irp->IoStatus.Information = sizeof arg;
+      arg = fsiz;
+      *(unsigned long*)irp->AssociatedIrp.SystemBuffer = arg;
 
-      } else {
+      newroot = duplicate_root(xsp, &newrootl);
+      if (newroot == 0) {
+	    printk("ise%u.%u: UCR_MAKE_FRAME: no memory for new root\n",
+		   xsp->id, xpd->channel);
+
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
 	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_NO_MEMORY;
       }
+
+      newroot->frame_table[fidx].ptr   = xsp->frame_tab[fidx]->self;
+      newroot->frame_table[fidx].magic = xsp->frame_tab[fidx]->magic;
+
+      root_to_board(xsp, irp, newroot, newrootl, make_frame_complete);
+      return STATUS_PENDING;
+}
+
+static NTSTATUS make_frame_complete(struct instance_t*xsp, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+
+      irp->IoStatus.Information =
+	    stp->Parameters.DeviceIoControl.OutputBufferLength;
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
       return STATUS_SUCCESS;
 }
+
+static NTSTATUS free_frame_complete(struct instance_t*xsp, IRP*irp);
 
 static NTSTATUS dev_ioctl_free_frame(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -467,6 +510,9 @@ static NTSTATUS dev_ioctl_free_frame(DEVICE_OBJECT*dev, IRP*irp)
       struct channel_t*xpd = get_channel(irp);
 
       unsigned long arg, fidx;
+
+      struct root_table*newroot;
+      PHYSICAL_ADDRESS newrootl;
 
       if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof arg) {
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
@@ -487,6 +533,28 @@ static NTSTATUS dev_ioctl_free_frame(DEVICE_OBJECT*dev, IRP*irp)
 	    return STATUS_UNSUCCESSFUL;
       }
 
+
+      newroot = duplicate_root(xsp, &newrootl);
+      if (newroot == 0) {
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_NO_MEMORY;
+      }
+
+      newroot->frame_table[fidx].ptr   = 0;
+      newroot->frame_table[fidx].magic = 0;
+
+      root_to_board(xsp, irp, newroot, newrootl, free_frame_complete);
+      return STATUS_PENDING;
+}
+
+static NTSTATUS free_frame_complete(struct instance_t*xsp, IRP*irp)
+{
+      unsigned long arg, fidx;
+
+      arg = *(unsigned long*)irp->AssociatedIrp.SystemBuffer;
+      fidx = (arg >> 28) & 0x0f;
 
       ise_free_frame(xsp, fidx);
 
@@ -683,6 +751,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.7  2001/09/07 03:01:53  steve
+ *  Actually pass the frames to the hardware.
+ *
  * Revision 1.6  2001/09/06 22:53:56  steve
  *  Flush can be cancelled.
  *
