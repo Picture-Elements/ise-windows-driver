@@ -71,8 +71,10 @@ static NTSTATUS dev_write_2(struct instance_t*xsp, IRP*irp)
 		 ISE board for reading. */
 	    if (xpd->out_off == xpd->table->out[idx].count) {
 
-		  printk("ise%u.%u (d): flush loaded write buffer\n",
-			 xsp->id, xpd->channel, count-tcount);
+		  if (debug_flag & UCR_TRACE_CHAN)
+			printk("ise%u.%u (d): flush loaded write buffer\n",
+			       xsp->id, xpd->channel, count-tcount);
+
 		  return flush_channel(xsp, irp, dev_write_2, dev_write_cancel);
 	    }
       }
@@ -96,6 +98,9 @@ static void dev_write_cancel(struct instance_t*xsp, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.4  2001/09/06 23:57:44  steve
+ *  make debug message folow debug flag.
+ *
  * Revision 1.3  2001/09/06 22:53:56  steve
  *  Flush can be cancelled.
  *
