@@ -166,7 +166,32 @@ struct instance_t {
       KSPIN_LOCK pending_read_sync;
       struct irp_counter pending_read_count;
 
-	/* Keep a list of the currently open channel. */
+	/* Keep information about the frames for this device.
+
+	   The frame_tab is a virtual address to the actual frame
+	   table. This table in turn contains the bus addresses of the
+	   pages of the frame. The pages are all PAGE_SIZE bytes. The
+	   bus address of the frame_tab is stored in the root table.
+
+	   The frame_ref keeps a reference count for each frame. This
+	   prevents releasing frames that are still mapped by
+	   processes somewhere.
+
+	   The frame_mdl is a Windows MDL that describes the frame
+	   memory. This is used to perform mappings into user mode
+	   address space.
+
+	   The frame_pag is a table of pointers to the virtual
+	   addresses of each page. The bus addresses for the pages are
+	   stored in the frame_tab. The bus and virtual addresses are
+	   needed to pass to FreeCommonBuffer when the pages are not
+	   needed anymore. */
+      struct frame_table*frame_tab[16];
+      unsigned frame_ref[16];
+      MDL     *frame_mdl[16];
+      void   **frame_pag[16];
+
+	/* Keep a list of the currently open channels. */
       struct channel_t *channels;
 };
 
@@ -196,7 +221,9 @@ struct channel_t {
       struct channel_t *next, *prev;
 };
 
-
+/*
+ * Device frobbing functions.
+ */
 extern void dev_init_hardware(struct instance_t*xsp);
 extern void dev_clear_hardware(struct instance_t*xsp);
 
@@ -220,6 +247,13 @@ extern void dev_unmask_irqs(struct instance_t*xsp, unsigned long mask);
 
 
 /*
+ * These are functions for manipulating frames.
+ */
+extern void ise_free_frame(struct instance_t*xsp, unsigned fidx);
+extern void ise_make_frame(struct instance_t*xsp, unsigned fidx,
+			   unsigned long frame_size);
+
+/*
  * These are DPCs that are extern so that the initialization code can
  * make the KDPC objects.
  */
@@ -228,6 +262,9 @@ extern void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.4  2001/08/14 22:25:30  steve
+ *  Add SseBase device
+ *
  * Revision 1.3  2001/08/03 17:39:41  steve
  *  Use status method to run programs.
  *

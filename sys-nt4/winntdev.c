@@ -124,6 +124,7 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
       xpd->ccp_write.pend_list = 0;
       xpd->ccp_ioctl.pend_list = 0;
 
+      xpd->read_timeout = UCRX_TIMEOUT_OFF;
       KeInitializeTimer(&xpd->read_timer.timer);
       KeInitializeDpc(&xpd->read_timer.dpc, read_timeout_dpc, xpd);
 
@@ -862,6 +863,9 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 
 /*
  * $Log$
+ * Revision 1.5  2001/08/14 22:25:30  steve
+ *  Add SseBase device
+ *
  * Revision 1.4  2001/07/12 22:49:42  steve
  *  Add support for UCRX_RESTART_BOARD, and
  *  support read timeouts.

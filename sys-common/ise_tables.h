@@ -39,7 +39,7 @@ typedef unsigned short __u16;
 #endif
 
 /*
- * This is the structure of the root table. The instance utruct has a
+ * This is the structure of the root table. The instance struct has a
  * pointer to this in the kernel address space, as well as the bus
  * address for telling the board where it is. This table in turn
  * contains bus addresses for all other tables. The structure is 4K bytes
@@ -71,6 +71,7 @@ struct root_table {
  * The size of this structure is defined by the page_count field. The
  * size of the frame is defined as page_size * page_count.
  */
+# define FRAME_TABLE_MAGIC 0x2eaffaaf
 struct frame_table {
       __u32 magic;
       __u32 self;
@@ -117,10 +118,19 @@ struct channel_table {
       } out[CHANNEL_OBUFS], in[CHANNEL_IBUFS];
 };
 
+# define CHANNEL_IN_EMPTY(x) ((x)->table->first_in_idx == (x)->table->next_in_idx)
+# define INCR_IN_IDX(x)  ((x) = ((x) + 1) % CHANNEL_IBUFS)
+
+# define NEXT_IN_IDX(x) (((x) + 1) % CHANNEL_IBUFS)
+# define NEXT_OUT_IDX(x) (((x) + 1) % CHANNEL_OBUFS)
+
 
 
 /*
  * $Log$
+ * Revision 1.2  2001/08/14 22:25:30  steve
+ *  Add SseBase device
+ *
  * Revision 1.1  2001/07/11 23:47:38  steve
  *  Add ucrx_timeout device controls.
  *

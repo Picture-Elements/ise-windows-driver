@@ -498,6 +498,16 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	}
       }
 
+	/* Clear the frame members of the instance. */
+      { unsigned idx;
+        for (idx = 0 ;  idx < 16 ; idx += 1) {
+	      xsp->frame_tab[idx] = 0;
+	      xsp->frame_ref[idx] = 0;
+	      xsp->frame_mdl[idx] = 0;
+	      xsp->frame_pag[idx] = 0;
+	}
+      }
+
 	/* Create and initialize an initial root table for the
 	   device. Do not send it to the board, though, because the
 	   board only needs to wake up when there is at least one
@@ -671,6 +681,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.3  2001/08/14 22:25:30  steve
+ *  Add SseBase device
+ *
  * Revision 1.2  2001/07/30 21:32:42  steve
  *  Rearrange the status path to follow the return codes of
  *  the callbacks, and preliminary implementation of the

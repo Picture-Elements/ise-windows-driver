@@ -43,15 +43,14 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
       dev_set_bells(xsp, 0x40000000);
 
 
-#if 0
 	/* Free all the frames that this board may have had. This is
 	   safe to do because there are no longer any pointers to the
 	   table, and the processor has been rebooted. */
       { unsigned idx;
         for (idx = 0 ;  idx < 16 ;  idx += 1)
-	      ucr_free_frame(xsp, idx);
+	      ise_free_frame(xsp, idx);
       }
-#endif
+
 
 	/* Make sure the table pointers are still clear, and re-enable
 	   the interrupts. */
@@ -296,6 +295,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.3  2001/08/14 22:25:30  steve
+ *  Add SseBase device
+ *
  * Revision 1.2  2001/07/30 21:32:43  steve
  *  Rearrange the status path to follow the return codes of
  *  the callbacks, and preliminary implementation of the
