@@ -474,12 +474,24 @@ static NTSTATUS dev_ioctl_mmap(DEVICE_OBJECT*dev, IRP*irp)
 	    return STATUS_NO_MEMORY;
       }
 
+	/* Check that the frame is not already mapped. */
+      if (xsp->frame_map[fidx].base != 0) {
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
 	/* Map the pages of the frame into user mode. Ignore the size
 	   that the user passes, and return the size chosen, along
 	   with the base address, to the caller. */
       mapinfo->base = MmMapLockedPagesSpecifyCache(xsp->frame_mdl[fidx],
 			  UserMode, MmNonCached, 0, FALSE, NormalPagePriority);
       mapinfo->size = xsp->frame_tab[fidx]->page_count * PAGE_SIZE;
+
+	/* Save the mapping. */
+      xsp->frame_map[fidx].proc = IoGetCurrentProcess();
+      xsp->frame_map[fidx].base = mapinfo->base;
 
 	/* All done, it seems. */
       irp->IoStatus.Status = STATUS_SUCCESS;
@@ -526,7 +538,33 @@ static NTSTATUS dev_ioctl_munmap(DEVICE_OBJECT*dev, IRP*irp)
 	    return STATUS_NO_MEMORY;
       }
 
-      MmUnmapLockedPages(mapinfo->base, xsp->frame_mdl[fidx]);
+	/* Check that there is a mapping to unmap. */
+      if (xsp->frame_map[fidx].base == 0){
+	    printk("ise%u: unmap frame %u, that is not mapped\n",
+		   xsp->id, fidx);
+
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_NO_MEMORY;
+      }
+
+	/* ... and that it belongs to me */
+      if (xsp->frame_map[fidx].proc != IoGetCurrentProcess()){
+	    printk("ise%u: unmap frame %u, that doesn't belong to me\n",
+		   xsp->id, fidx);
+
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_NO_MEMORY;
+      }
+
+	/* Unmap the mapping, and clear it from the device driver. */
+      MmUnmapLockedPages(xsp->frame_map[fidx].base, xsp->frame_mdl[fidx]);
+
+      xsp->frame_map[fidx].proc = 0;
+      xsp->frame_map[fidx].base = 0;
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = 0;
@@ -586,6 +624,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.4  2001/09/05 22:05:55  steve
+ *  protect mappings from misused or forgotten unmaps.
+ *
  * Revision 1.3  2001/09/04 02:47:09  steve
  *  Add frame allocate/free/map/unmap controls.
  *

@@ -110,6 +110,12 @@ struct irp_counter {
       unsigned cancelled;
 };
 
+struct frame_mapping {
+      PEPROCESS proc;
+      void*base;
+};
+
+      
 /*
  * The device driver creates a DEVICE_OBJECT, an "fdo" object, to
  * carry all the device specific support for the hardware. Included in
@@ -187,9 +193,10 @@ struct instance_t {
 	   needed to pass to FreeCommonBuffer when the pages are not
 	   needed anymore. */
       struct frame_table*frame_tab[16];
-      unsigned frame_ref[16];
       MDL     *frame_mdl[16];
       void   **frame_pag[16];
+
+      struct frame_mapping frame_map[16];
 
 	/* Keep a list of the currently open channels. */
       struct channel_t *channels;
@@ -204,6 +211,8 @@ struct channel_t {
       unsigned short channel;
 	/* Back-pointer to the device. */
       struct instance_t*xsp;
+	/* Process id to identify the owner. */
+      PEPROCESS proc;
 
 	/* This is the table that represents the channel for the ISE
 	   board and the driver. */
@@ -262,6 +271,9 @@ extern void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.6  2001/09/05 22:05:55  steve
+ *  protect mappings from misused or forgotten unmaps.
+ *
  * Revision 1.5  2001/09/04 02:47:09  steve
  *  Add frame allocate/free/map/unmap controls.
  *

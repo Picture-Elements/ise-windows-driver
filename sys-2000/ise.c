@@ -191,6 +191,7 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 
       xpd->channel = 0;
       xpd->xsp = xsp;
+      xpd->proc = IoGetCurrentProcess();
 
       xpd->table = (struct channel_table*)
 	    xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
@@ -285,6 +286,37 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
       PHYSICAL_ADDRESS newrootl;
       struct root_table*newroot = duplicate_root(xsp, &newrootl);
 
+      if (xpd->proc != IoGetCurrentProcess()) {
+	    printk("ise%u.%u: close by wrong owner?!\n",
+		   xsp->id, xpd->channel);
+      }
+
+	/* If this is the last channel for this process, then remove
+	   any frame mappings first. */
+      { unsigned count = 0, fidx;
+        struct channel_t*cur;
+	for (cur = xpd->next ;  cur != xpd ;  cur = cur->next) {
+	      if (cur->proc == xpd->proc)
+		    count += 1;
+	}
+
+	if (count == 0) for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
+
+	      if (xsp->frame_map[fidx].base
+		  && (xsp->frame_map[fidx].proc == xpd->proc)) {
+		    printk("ise%u.%u: unmap frame %u on final close.\n",
+			   xsp->id, xpd->channel, fidx);
+
+		    MmUnmapLockedPages(xsp->frame_map[fidx].base,
+				       xsp->frame_mdl[fidx]);
+
+		    xsp->frame_map[fidx].proc = 0;
+		    xsp->frame_map[fidx].base = 0;
+	      }
+	}
+      }
+
+	/* Now start detaching the channel from the board. */
       newroot->chan[xpd->channel].magic = 0;
       newroot->chan[xpd->channel].ptr = 0;
       root_to_board(xsp, irp, newroot, newrootl, &dev_close_2);
@@ -502,9 +534,10 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       { unsigned idx;
         for (idx = 0 ;  idx < 16 ; idx += 1) {
 	      xsp->frame_tab[idx] = 0;
-	      xsp->frame_ref[idx] = 0;
 	      xsp->frame_mdl[idx] = 0;
 	      xsp->frame_pag[idx] = 0;
+	      xsp->frame_map[idx].proc = 0;
+	      xsp->frame_map[idx].base = 0;
 	}
       }
 
@@ -681,6 +714,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.4  2001/09/05 22:05:55  steve
+ *  protect mappings from misused or forgotten unmaps.
+ *
  * Revision 1.3  2001/08/14 22:25:30  steve
  *  Add SseBase device
  *
