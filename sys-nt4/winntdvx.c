@@ -116,11 +116,15 @@ static void do_ucrx_timeout(DEVICE_OBJECT*dev, IRP*irp)
       } else switch (ts->read_timeout) {
 
 	  case UCRX_TIMEOUT_OFF:
-	    xpd->read_timeout = -1;
+	    xpd->read_timeout = UCRX_TIMEOUT_OFF;
 	    break;
 
 	  case UCRX_TIMEOUT_FORCE:
 	    xpd->read_timeout_flag = 1;
+	    if (xpd->read_timing) {
+		   KeCancelTimer(&xpd->read_timer.timer);
+		   xpd->read_timing = 0;
+	    }
 	    KeInsertQueueDpc(&xsp->pending_io_dpc, 0, 0);
 	    break;
 
@@ -167,6 +171,42 @@ static void do_standard_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 }
 
+static NTSTATUS do_restart_board(DEVICE_OBJECT*dev, IRP*irp)
+{
+      struct Instance*xsp = *((struct Instance**)dev->DeviceExtension);
+
+	/* Cannot restart the board if there are any channels open. */
+      if (xsp->channels != 0) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    return irp->IoStatus.Status;
+      }
+
+      if (debug_flag&UCR_TRACE_UCRX)
+	    printk("ucrx%u: restart ise%u\n", xsp->number, xsp->number);
+
+	/* restart doorbell to the processor. Code on the processor
+	   should notice this interrupt and restart itself. */
+      dev_set_bells(xsp->dev, 0x40000000);
+
+	/* Clear outbound interrupts and the table pointer. (The ISE
+	   board will loop waiting for the table pointer to clear. If
+	   the table pointer already is cleared, then it will continue
+	   with its reset.) */
+      dev_init_hardware(xsp->dev);
+
+	/* Free all the frames that this board may have had. This is
+	   safe to do because there are no longer any pointers to the
+	   table, and the processor has been rebooted. */
+      { unsigned idx;
+        for (idx = 0 ;  idx < 16 ;  idx += 1)
+	      ucr_free_frame(xsp, idx);
+      }
+
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      return irp->IoStatus.Status;
+}
+
 NTSTATUS devx_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 {
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
@@ -176,6 +216,11 @@ NTSTATUS devx_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 	  case UCRX_TIMEOUT:
 	    do_ucrx_timeout(dev, irp);
 	    break;
+
+	  case UCRX_RESTART_BOARD:
+	    do_restart_board(dev, irp);
+	    break;
+
 	  default:
 	    do_standard_ioctl(dev, irp);
 	    break;
@@ -249,7 +294,7 @@ NTSTATUS create_devx(DRIVER_OBJECT*drv, struct Instance*xsp)
 	/* Make the kernel device object and initialize the instance
 	   structure with the basics. */
       status = IoCreateDevice(drv, sizeof(struct Instance*), &dev_name,
-			      FILE_DEVICE_UCRX, 0, TRUE, &dev);
+			      FILE_DEVICE_UCRX, 0, FALSE, &dev);
       if (! NT_SUCCESS(status)) return status;
 
       dev->Flags |= DO_DIRECT_IO;
@@ -279,6 +324,10 @@ NTSTATUS create_devx(DRIVER_OBJECT*drv, struct Instance*xsp)
 
 /*
  * $Log$
+ * Revision 1.3  2001/07/12 22:49:42  steve
+ *  Add support for UCRX_RESTART_BOARD, and
+ *  support read timeouts.
+ *
  * Revision 1.2  2001/07/12 20:31:05  steve
  *  Support UCRX_TIMEOUT_FORCE
  *

@@ -151,9 +151,9 @@ struct ChannelData {
       unsigned out_off;
 
       long read_timeout;
-	/*struct timer_list read_timer;*/
+      struct timer_list read_timer;
       int read_timeout_flag;
-	/*int read_timing;*/
+      int read_timing;
 
       struct ChannelData *next, *prev;
 };
@@ -268,6 +268,10 @@ extern void ucr_clear_instance(struct Instance*xsp);
 
 /*
  * $Log$
+ * Revision 1.4  2001/07/12 22:49:42  steve
+ *  Add support for UCRX_RESTART_BOARD, and
+ *  support read timeouts.
+ *
  * Revision 1.3  2001/07/12 20:31:05  steve
  *  Support UCRX_TIMEOUT_FORCE
  *

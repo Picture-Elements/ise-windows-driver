@@ -41,6 +41,7 @@
 
 #define get_channel(irp) ((struct ChannelData*)(IoGetCurrentIrpStackLocation(irp)->FileObject->FsContext))
 
+static void read_timeout_dpc(PKDPC kdpc, void*context, void*arg1, void*arg2);
 
 /*
  * This is the cancel function that handles enqueued read IRPs. All I
@@ -123,6 +124,9 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
       xpd->ccp_write.pend_list = 0;
       xpd->ccp_ioctl.pend_list = 0;
 
+      KeInitializeTimer(&xpd->read_timer.timer);
+      KeInitializeDpc(&xpd->read_timer.dpc, read_timeout_dpc, xpd);
+
       rc = ucr_open(xsp, xpd);
 
       if (rc == 0) {
@@ -162,6 +166,27 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
       irp->IoStatus.Information = 0;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
       return STATUS_SUCCESS;
+}
+
+static void read_timeout_dpc(PKDPC kdpc, void*context, void*arg1, void*arg2)
+{
+      struct ChannelData*xpd = (struct ChannelData*)context;
+      struct Instance*xsp = xpd->xsp;
+
+      xpd->read_timeout_flag = 1;
+      xpd->read_timing = 0;
+      KeInsertQueueDpc(&xsp->pending_io_dpc, 0, 0);
+}
+
+static void start_read_timeout(struct Instance*xsp, struct ChannelData*xpd)
+{
+      LARGE_INTEGER delay;
+      delay.LowPart = xpd->read_timeout * 10000;
+      delay.HighPart = 0;
+
+      xpd->read_timing = 1;
+      KeSetTimer(&xpd->read_timer.timer, RtlLargeIntegerNegate(delay),
+		 &xpd->read_timer.dpc);
 }
 
 NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp, BOOLEAN retry_flag)
@@ -207,9 +232,17 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp, BOOLEAN retry_flag)
       ccp->pend_list = &xsp->pending_read_irps;
       rc = ucr_read(xsp, xpd, ccp, base, cnt, flag);
 
-      if (rc == -EINTR)
-	    return STATUS_PENDING;
+      if (rc == -EINTR) {
+	    if ((xpd->read_timeout > 0) && ! xpd->read_timing)
+		  start_read_timeout(xsp, xpd);
 
+	    return STATUS_PENDING;
+      }
+
+      if (xpd->read_timing) {
+	    KeCancelTimer(&xpd->read_timer.timer);
+	    xpd->read_timing = 0;
+      }
 
       if (rc >= 0) {
 	    irp->IoStatus.Status = STATUS_SUCCESS;
@@ -829,6 +862,10 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 
 /*
  * $Log$
+ * Revision 1.4  2001/07/12 22:49:42  steve
+ *  Add support for UCRX_RESTART_BOARD, and
+ *  support read timeouts.
+ *
  * Revision 1.3  2001/07/12 20:31:05  steve
  *  Support UCRX_TIMEOUT_FORCE
  *

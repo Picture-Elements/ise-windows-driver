@@ -312,10 +312,16 @@ NTSTATUS create_console(DRIVER_OBJECT*drv)
 
       RtlInitUnicodeString(&link_name, L"\\DosDevices\\ISECONS");
       IoCreateSymbolicLink(&link_name, &dev_name);
+
+      return STATUS_SUCCESS;
 }
 
 /*
  * $Log$
+ * Revision 1.2  2001/07/12 22:49:42  steve
+ *  Add support for UCRX_RESTART_BOARD, and
+ *  support read timeouts.
+ *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
  *
