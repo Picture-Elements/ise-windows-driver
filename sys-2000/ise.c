@@ -108,8 +108,14 @@ struct root_table*duplicate_root(struct instance_t*xsp, PHYSICAL_ADDRESS*ptrl)
 		  return 0;
       }
 
-      RtlCopyMemory(newroot, xsp->root, sizeof (*newroot));
-      newroot->self = ptrl->LowPart;
+      if (xsp->root) {
+	    RtlCopyMemory(newroot, xsp->root, sizeof (struct root_table));
+	    newroot->self = ptrl->LowPart;
+      } else {
+	    RtlZeroMemory(newroot, sizeof(struct root_table));
+	    newroot->magic = ROOT_TABLE_MAGIC;
+	    newroot->self = ptrl->LowPart;
+      }
 
       return newroot;
 }
@@ -217,24 +223,22 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 
       xsp->root_irp = 0;
 
-      if (xsp->root2 == 0)
-	    goto complete;
-
 	/* Poison then release the old root table, and set the
 	   pointers to point to the new root table. Save the existing
 	   root for possible reuse later. */
-      xsp->root->magic = 0x11111111;
-      if (xsp->root_standby)
-	    xsp->root_standby_leak += 1;
-      xsp->root_standby = xsp->root;
-      xsp->rootl_standby = xsp->rootl;
+      if (xsp->root) {
+	    RtlZeroMemory(xsp->root, sizeof (struct root_table));
+	    if (xsp->root_standby)
+		  xsp->root_standby_leak += 1;
+	    xsp->root_standby = xsp->root;
+	    xsp->rootl_standby = xsp->rootl;
+      }
 
       xsp->root  = xsp->root2;
       xsp->rootl = xsp->rootl2;
 
       xsp->root2 = 0;
 
- complete:
       { callback_t callback = xsp->root_callback;
         xsp->root_callback = 0;
 	KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
@@ -985,6 +989,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.17  2005/03/02 15:25:43  steve
+ *  Better job of poisoning old roots, and activating new ones.
+ *
  * Revision 1.16  2004/10/25 23:27:10  steve
  *  Fix close to detach when the last channel is closed.
  *
