@@ -123,8 +123,11 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 	    break;
 
 	  case 1:
-	    printk("ise%u: %u root table pending\n", xsp->id,
-		   xsp->root_irp? 1 : 0);
+	    if (xsp->root_irp) {
+		  printk("ise%u: root table pending MAGIC=[%x:%x]\n", xsp->id,
+			 xsp->root2? xsp->root2->self  : 0x00000000,
+			 xsp->root2? xsp->root2->magic : 0x00000000);
+	    }
 
 	    printk("ise%u: reads scheduled=%u, completed=%u, "
 		   "cancelled=%u\n", xsp->id,
@@ -132,17 +135,32 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 		   xsp->pending_read_count.complete,
 		   xsp->pending_read_count.cancelled);
 
-	    if (xsp->bar0_size > 0)
-		  printk("ise%u: root_table = (base=%x resp=%x), "
-		       "IDR=%x, IIMR=%x, ODR=%x, OIMR=%x\n", xsp->id,
+	    if (xsp->bar0_size > 0) {
+		  printk("ise%u: root_table = (base=%x resp=%x)\n", xsp->id,
 		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x20)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)));
+
+		  printk("ise%u: OIMR=%x, OISR=%x, ODR=%x\n", xsp->id,
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x30)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x2c)));
+
+		  printk("ise%u: IIMR=%x, IISR=%x, IDR=%x\n", xsp->id,
 		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x28)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x2c)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34)));
-	    else
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x24)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x20)));
+
+		  printk("ise%u: OMR0=%x, OMR1=%x\n", xsp->id,
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x1c)));
+
+		  printk("ise%u: IMR0=%x, IMR1=%x\n", xsp->id,
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x14)));
+
+	    } else {
 		  printk("ise%u: <** Device Not Mapped **>\n", xsp->id);
+	    }
 
 	    printk("ise%u: ROOT TABLE at %p(%x) "
 		   "MAGIC=[%x:%x] standby_leak=%u\n", xsp->id, xsp->root,
@@ -430,6 +448,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.10  2002/05/13 20:07:52  steve
+ *  More diagnostic detail, and check registers.
+ *
  * Revision 1.9  2002/04/11 00:49:30  steve
  *  Move FreeCommonBuffers to PASSIVE_MODE using standby lists.
  *

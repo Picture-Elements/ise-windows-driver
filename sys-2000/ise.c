@@ -150,6 +150,8 @@ void root_to_board(struct instance_t*xsp, IRP*irp,
 	    printk("ise%u: warning: root_callback overrun.\n", xsp->id);
       }
 
+	/* Stash the pointers, the IRP and the callback into a standby
+	   area and mark the IRP pending. */
       xsp->root2 = root;
       xsp->rootl2 = rootl;
       xsp->root_irp = irp;
@@ -162,7 +164,9 @@ void root_to_board(struct instance_t*xsp, IRP*irp,
 	   about to write into the base register, so that I can
 	   properly wait for the resp to change. */
       if (root) dev_set_root_table_resp(xsp, 0);
-      dev_set_root_table_base(xsp, root->self);
+
+	/* Set the pointer to the root table. */
+      dev_set_root_table_base(xsp, root? root->self : 0);
 
 	/* Signal the hardware that I'm sending a root table. */
       dev_set_bells(xsp, ROOT_TABLE_BELLMASK);
@@ -190,8 +194,13 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
       if (irp == 0)
 	    return;
 
-      if (dev_get_root_table_resp(xsp) != xsp->root2->self)
+      if (dev_get_root_table_resp(xsp) != (xsp->root2? xsp->root2->self : 0)) {
+	    printk("ise%u: warning: root not received yet: "
+		   "resp=%x, self=%x.\n", xsp->id,
+		   dev_get_root_table_resp(xsp),
+		   (xsp->root2? xsp->root2->self : 0));
 	    return;
+      }
 
       xsp->root_irp = 0;
 
@@ -791,6 +800,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.12  2002/05/13 20:07:52  steve
+ *  More diagnostic detail, and check registers.
+ *
  * Revision 1.11  2002/04/11 00:49:30  steve
  *  Move FreeCommonBuffers to PASSIVE_MODE using standby lists.
  *

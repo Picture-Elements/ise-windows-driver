@@ -16,6 +16,8 @@
 
 void dev_init_hardware(struct instance_t*xsp)
 {
+      __u32 tmp;
+
 	/* OUTBELLS = 0x0fffffff */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x2c), 0x0fffffff);
 	/* INBOUND0 = 0 */
@@ -24,14 +26,33 @@ void dev_init_hardware(struct instance_t*xsp)
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x14), 0);
 	/* OUTBOUNT0 = 0 */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18), 0);
-	/* OIMR = 0xfb */
+
+	/* OIMR = 0xfb (Enable only doorbells) */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34), 0xfb);
+      tmp = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34));
+      if ((tmp&0x7f) != 0x7b) {
+	    printk("ise%u: error: OIMR wont stick. Wrote 0xfb, OIMR=%x\n",
+		   xsp->id, tmp);
+	    WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34), 0xfb);
+	    WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34), 0xfb);
+	    tmp = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34));
+	    printk("ise%u:      : Tried harder. Wrote 0xfb, OIMR=%x\n",
+		   xsp->id, tmp);
+      }
 }
 
 void dev_clear_hardware(struct instance_t*xsp)
 {
+      __u32 tmp;
+
 	/* OIMR = 0xfb (Enable only doorbells) */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34), 0xfb);
+      tmp = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34));
+      if ((tmp&0x7f) != 0x7b) {
+	    printk("ise%u: error: OIMR wont stick. Wrote 0xfb, got %x\n",
+		   xsp->id, tmp);
+      }
+
 	/* INBOUND0 = 0 */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10), 0);
 	/* INBOUND1 = 0 */
@@ -46,9 +67,22 @@ void dev_set_bells(struct instance_t*xsp, unsigned long mask)
 			   mask & 0x7fffffffUL);
 }
 
+/*
+ * Write the pointer into the root table base word. Read it back again
+ * to make sure the write gets through the PCI bus and into the
+ * device. While we're at it, compare that readout value to triple-
+ * check that all went properly.
+ */
 void dev_set_root_table_base(struct instance_t*xsp, __u32 value)
 {
+      __u32 tmp;
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10), value);
+
+      tmp = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10));
+      if (tmp != value) {
+	    printk("ise%u: error: root pointer wont stick."
+		   " Wrote %x, got %x.\n", xsp->id, value, tmp);
+      }
 }
 
 void dev_set_root_table_resp(struct instance_t*xsp, __u32 value)
@@ -113,6 +147,9 @@ void dev_unmask_irqs(struct instance_t*xsp, unsigned long mask)
 
 /*
  * $Log$
+ * Revision 1.4  2002/05/13 20:07:52  steve
+ *  More diagnostic detail, and check registers.
+ *
  * Revision 1.3  2001/10/25 23:46:41  steve
  *  Mask all but doorbell interrupts.
  *
