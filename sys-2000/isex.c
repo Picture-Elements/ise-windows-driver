@@ -145,10 +145,11 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 		  printk("ise%u: <** Device Not Mapped **>\n", xsp->id);
 
 	    printk("ise%u: ROOT TABLE at %p(%x) "
-		   "MAGIC=[%x:%x]\n", xsp->id, xsp->root,
+		   "MAGIC=[%x:%x] standby_leak=%u\n", xsp->id, xsp->root,
 		   xsp->root? xsp->root->self  : 0x00000000,
 		   xsp->root? xsp->root->magic : 0x00000000,
-		   xsp->root? xsp->root->self  : 0x00000000);
+		   xsp->root? xsp->root->self  : 0x00000000,
+		   xsp->root_standby_leak);
 
 	    if (xsp->channels) {
 		  struct channel_t*xpd = xsp->channels;
@@ -429,6 +430,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.9  2002/04/11 00:49:30  steve
+ *  Move FreeCommonBuffers to PASSIVE_MODE using standby lists.
+ *
  * Revision 1.8  2002/04/10 23:20:27  steve
  *  Do not touch IRP after it is completed.
  *

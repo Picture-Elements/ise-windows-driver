@@ -32,6 +32,55 @@ struct channel_t* channel_by_id(struct instance_t*xsp, unsigned short id)
 }
 
 /*
+ * This function is called periodically to remove saved channel
+ * tables. These tables are save by the close when it completes,
+ * because it needs to leave the tables about for a little while to
+ * guard against fishy target board accesses.
+ */
+static void cleanup_channel_standby_list(struct instance_t*xsp)
+{
+      struct channel_t*xpd;
+
+      while (xpd = xsp->channel_standby_list) {
+	    xsp->channel_standby_list = xpd->next;
+
+	    if (xpd->table) {
+		  unsigned idx;
+		    /* Release the in and out buffers. */
+		  for (idx = 0 ;  idx < CHANNEL_IBUFS ;  idx += 1) {
+			if (xpd->in[idx].ptr)
+			      xsp->dma->DmaOperations->FreeCommonBuffer(
+						   xsp->dma,
+						   PAGE_SIZE,
+						   xpd->in[idx].ptrl,
+						   xpd->in[idx].ptr,
+						   FALSE);
+		  }
+
+		  for (idx = 0 ;  idx < CHANNEL_OBUFS ;  idx += 1) {
+			if (xpd->out[idx].ptr)
+			      xsp->dma->DmaOperations->FreeCommonBuffer(
+						   xsp->dma,
+						   PAGE_SIZE,
+						   xpd->out[idx].ptrl,
+						   xpd->out[idx].ptr,
+						   FALSE);
+		  }
+
+		    /* Release the table itself. Poison the memory first. */
+		  xpd->table->self = 0;
+		  xpd->table->magic = 0x11111111;
+		  xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
+				  sizeof(*xpd->table), xpd->tablel,
+				  xpd->table, FALSE);
+	    }
+
+	      /* All done, release the channel_t object. */
+	    ExFreePool(xpd);
+      }
+}
+
+/*
  * Make a copy of the current root table, with the magic numbers
  * twisted so that this is a valid table. The caller can then do minor
  * modifications to this copy before installing it.
@@ -40,12 +89,19 @@ struct root_table*duplicate_root(struct instance_t*xsp, PHYSICAL_ADDRESS*ptrl)
 {
       struct root_table*newroot;
 
-      newroot = (struct root_table*)
-	    xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
-			    sizeof(struct root_table), ptrl, FALSE);
+      if (xsp->root_standby) {
+	    newroot = xsp->root_standby;
+	    *ptrl = xsp->rootl_standby;
+	    xsp->root_standby = 0;
 
-      if (newroot == 0)
-	    return 0;
+      } else {
+	    newroot = (struct root_table*)
+		  xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
+				     sizeof(struct root_table), ptrl, FALSE);
+
+	    if (newroot == 0)
+		  return 0;
+      }
 
       RtlCopyMemory(newroot, xsp->root, sizeof (*newroot));
       newroot->self = ptrl->LowPart;
@@ -143,11 +199,14 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	    goto complete;
 
 	/* Poison then release the old root table, and set the
-	   pointers to point to the new root table. */
+	   pointers to point to the new root table. Save the existing
+	   root for possible reuse later. */
       xsp->root->magic = 0x11111111;
-      xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma, sizeof (*xsp->root),
-						xsp->rootl, xsp->root,
-						FALSE);
+      if (xsp->root_standby)
+	    xsp->root_standby_leak += 1;
+      xsp->root_standby = xsp->root;
+      xsp->rootl_standby = xsp->rootl;
+
       xsp->root  = xsp->root2;
       xsp->rootl = xsp->rootl2;
 
@@ -159,6 +218,8 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	(*callback)(xsp, irp);
       }
 }
+
+
 
 /*
  * This entry is in response to a CreateFile. We create a new channel
@@ -240,6 +301,8 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 	    xpd->table->out[idx].count = PAGE_SIZE;
       }
 
+
+      cleanup_channel_standby_list(xsp);
 
 
 	/* Put the channel information into the channel list so that
@@ -333,6 +396,8 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 	}
       }
 
+      cleanup_channel_standby_list(xsp);
+
 	/* Now start detaching the channel from the board. */
       newroot->chan[xpd->channel].magic = 0;
       newroot->chan[xpd->channel].ptr = 0;
@@ -360,36 +425,16 @@ static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp)
       }
 
       if (xpd->table) {
-	    unsigned idx;
-	      /* Release the in and out buffers. */
-	    for (idx = 0 ;  idx < CHANNEL_IBUFS ;  idx += 1) {
-		  if (xpd->in[idx].ptr)
-			xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-						   PAGE_SIZE,
-						   xpd->in[idx].ptrl,
-						   xpd->in[idx].ptr,
-						   FALSE);
-	    }
-
-	    for (idx = 0 ;  idx < CHANNEL_OBUFS ;  idx += 1) {
-		  if (xpd->out[idx].ptr)
-			xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-						   PAGE_SIZE,
-						   xpd->out[idx].ptrl,
-						   xpd->out[idx].ptr,
-						   FALSE);
-	    }
-
 	      /* Release the table itself. Poison the memory first. */
 	    xpd->table->self = 0;
 	    xpd->table->magic = 0x11111111;
-	    xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-				  sizeof(*xpd->table), xpd->tablel,
-				  xpd->table, FALSE);
-      }
+	    xpd->next = xsp->channel_standby_list;
+	    xsp->channel_standby_list = xpd;
 
-	/* All done, release the channel_t object. */
-      ExFreePool(xpd);
+      } else {
+	      /* All done, release the channel_t object. */
+	    ExFreePool(xpd);
+      }
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = 0;
@@ -604,6 +649,8 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
 
       printk("ise%u: pnp_stop_ise\n", xsp->id);
 
+      cleanup_channel_standby_list(xsp);
+
 	/* Release the root table. */
       if (xsp->root) {
 	    xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
@@ -614,6 +661,14 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
 	    xsp->root = 0;
       }
 
+      if (xsp->root_standby) {
+	    xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
+						  sizeof(*xsp->root_standby),
+						  xsp->rootl_standby,
+						  xsp->root_standby,
+						  FALSE);
+	    xsp->root_standby = 0;
+      }
 	/* Make sure the hardware will not interrupt the host. Only do
 	   this if we actually cot device registers. */
       if (xsp->bar0_size)
@@ -736,6 +791,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.11  2002/04/11 00:49:30  steve
+ *  Move FreeCommonBuffers to PASSIVE_MODE using standby lists.
+ *
  * Revision 1.10  2002/04/10 23:20:27  steve
  *  Do not touch IRP after it is completed.
  *

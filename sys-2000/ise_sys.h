@@ -155,6 +155,13 @@ struct instance_t {
       PHYSICAL_ADDRESS rootl;
       struct root_table*root;
 
+	/* This is a root table buffer that is on standby. Save ones
+	   that I've freed, so that it can be reused. */
+      PHYSICAL_ADDRESS rootl_standby;
+
+      struct root_table*root_standby;
+      unsigned root_standby_leak;
+
       unsigned char config_buf[4];
 
 	/* These members hold the context of the root transfer. This
@@ -209,6 +216,8 @@ struct instance_t {
 
 	/* Keep a list of the currently open channels. */
       struct channel_t *channels;
+
+      struct channel_t *channel_standby_list;
 };
 
 /*
@@ -291,6 +300,9 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.10  2002/04/11 00:49:30  steve
+ *  Move FreeCommonBuffers to PASSIVE_MODE using standby lists.
+ *
  * Revision 1.9  2001/09/28 18:09:53  steve
  *  Create a per-device mutex to manage multi-processor access
  *  to the instance object.
