@@ -44,10 +44,10 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp)
 	    printk("ise%u.%u: read %u bytes\n",
 		   xsp->id, xpd->channel, stp->Parameters.Read.Length);
 
-	/* Start the read with a flush of the write side. This gets
-	   the board thinking about the last write command that I
-	   might have sent. */
-      return flush_channel(xsp, irp, &dev_read_2, &dev_read_flush_cancel);
+	/* Jump right into the phase 2 read function. This may detect
+	   that it is blecked and reschedule itself, but that is for
+	   itself to decide. */
+      return dev_read_2(xsp, irp);
 }
 
 static void read_cancel(DEVICE_OBJECT*dev, IRP*irp);
@@ -373,19 +373,11 @@ void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 }
 
 
-static void dev_read_flush_cancel(struct instance_t*xsp, IRP*irp)
-{
-      struct channel_t*xpd = get_channel(irp);
-
-      xpd->read_pending = 0;
-
-      irp->IoStatus.Status = STATUS_CANCELLED;
-      irp->IoStatus.Information = 0;
-      IoCompleteRequest(irp, IO_NO_INCREMENT);
-}
-
 /*
  * $Log$
+ * Revision 1.9  2003/01/09 22:38:06  steve
+ *  No need to do flush in a READ.
+ *
  * Revision 1.8  2001/10/01 22:48:20  steve
  *  Cancel timers in cancel routines.
  *
