@@ -292,8 +292,29 @@ struct ucrx_timeout_s {
 };
 # define UCRX_TIMEOUT UCRX_(0,12)
 
+
+/*
+ * The controls only exist in the Linux device driver. They allow the
+ * board to be removed (powered off by a bus extender) and
+ * replaced.
+ *
+ * The UCRX_REMOVE saves the board configuration, locks the board in
+ * the driver, and disables the board in its configuration space. When
+ * this is done, the board can be powered off and removed, without
+ * disturbing the operating system.
+ *
+ * The UCRX_REPLACE command causes the saved board configuration to be
+ * used to reconfigure a new board in the same position. The board
+ * must be of a compatible type for this to work properly.
+ */
+# define UCRX_REMOVE  UCRX_(0,13)
+# define UCRX_REPLACE UCRX_(0,14)
+
 /*
  * $Log$
+ * Revision 1.2  2002/03/26 03:13:08  steve
+ *  Add REMOVE/REPLACE ioctl definitions.
+ *
  * Revision 1.1  2001/07/11 23:47:38  steve
  *  Add ucrx_timeout device controls.
  *
@@ -302,15 +323,6 @@ struct ucrx_timeout_s {
  *
  * Revision 1.1  2001/03/03 01:30:49  steve
  *  Make an isolated linux driver source tree.
- *
- * Revision 1.5  2000/08/29 01:05:29  steve
- *  Adapt to new compiler.
- *
- * Revision 1.4  2000/02/05 17:32:27  steve
- *  Free frames when resetting board.
- *
- * Revision 1.3  1998/06/06 05:40:04  steve
- *  Linux/alpha 2.1.100 port.
  */
 
 
