@@ -250,8 +250,8 @@ extern void dev_unmask_irqs(struct instance_t*xsp, unsigned long mask);
  * These are functions for manipulating frames.
  */
 extern void ise_free_frame(struct instance_t*xsp, unsigned fidx);
-extern void ise_make_frame(struct instance_t*xsp, unsigned fidx,
-			   unsigned long frame_size);
+extern unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
+				    unsigned long frame_size);
 
 /*
  * These are DPCs that are extern so that the initialization code can
@@ -262,6 +262,9 @@ extern void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.5  2001/09/04 02:47:09  steve
+ *  Add frame allocate/free/map/unmap controls.
+ *
  * Revision 1.4  2001/08/14 22:25:30  steve
  *  Add SseBase device
  *

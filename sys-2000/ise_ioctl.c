@@ -376,6 +376,164 @@ static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
       return STATUS_PENDING;
 }
 
+static NTSTATUS dev_ioctl_make_frame(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
+      struct channel_t*xpd = get_channel(irp);
+
+      unsigned long arg, fidx, fsiz;
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof arg) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      arg = *(unsigned long*)irp->AssociatedIrp.SystemBuffer;
+      fidx = (arg >> 28) & 0x0f;
+      fsiz = arg & 0x0fffffffUL;
+
+      fsiz = ise_make_frame(xsp, fidx, fsiz);
+
+      if (stp->Parameters.DeviceIoControl.OutputBufferLength >= sizeof arg) {
+	    arg = fsiz;
+	    *(unsigned long*)irp->AssociatedIrp.SystemBuffer = arg;
+	    irp->IoStatus.Information = sizeof arg;
+
+      } else {
+	    irp->IoStatus.Information = 0;
+      }
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
+}
+
+static NTSTATUS dev_ioctl_free_frame(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
+      struct channel_t*xpd = get_channel(irp);
+
+      unsigned long arg, fidx;
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof arg) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      arg = *(unsigned long*)irp->AssociatedIrp.SystemBuffer;
+      fidx = (arg >> 28) & 0x0f;
+
+      ise_free_frame(xsp, fidx);
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      irp->IoStatus.Information = 0;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
+}
+
+static NTSTATUS dev_ioctl_mmap(DEVICE_OBJECT*dev, IRP*irp)
+{
+      NTSTATUS status;
+      unsigned long fidx;
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
+      struct channel_t*xpd = get_channel(irp);
+
+      struct UcrMmapInfo*mapinfo;
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof*mapinfo){
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      mapinfo = (struct UcrMmapInfo*)irp->AssociatedIrp.SystemBuffer;
+
+	/* Check that the frame id is valid. */
+      if (mapinfo->frame_id >= 16) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      fidx = mapinfo->frame_id;
+
+	/* Check that the frame exists. */
+      if (xsp->frame_mdl[fidx] == 0) {
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_NO_MEMORY;
+      }
+
+	/* Map the pages of the frame into user mode. Ignore the size
+	   that the user passes, and return the size chosen, along
+	   with the base address, to the caller. */
+      mapinfo->base = MmMapLockedPagesSpecifyCache(xsp->frame_mdl[fidx],
+			  UserMode, MmNonCached, 0, FALSE, NormalPagePriority);
+      mapinfo->size = xsp->frame_tab[fidx]->page_count * PAGE_SIZE;
+
+	/* All done, it seems. */
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      irp->IoStatus.Information = sizeof(*mapinfo);
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
+}
+
+static NTSTATUS dev_ioctl_munmap(DEVICE_OBJECT*dev, IRP*irp)
+{
+      NTSTATUS status;
+      unsigned long fidx;
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
+      struct channel_t*xpd = get_channel(irp);
+
+      struct UcrMmapInfo*mapinfo;
+
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof*mapinfo){
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      mapinfo = (struct UcrMmapInfo*)irp->AssociatedIrp.SystemBuffer;
+
+	/* Check that the frame id is valid. */
+      if (mapinfo->frame_id >= 16) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      fidx = mapinfo->frame_id;
+
+	/* Check that the frame exists. */
+      if (xsp->frame_mdl[fidx] == 0) {
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_NO_MEMORY;
+      }
+
+      MmUnmapLockedPages(mapinfo->base, xsp->frame_mdl[fidx]);
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      irp->IoStatus.Information = 0;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
+}
+
 NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 {
       NTSTATUS status;
@@ -398,6 +556,22 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 	    status = dev_ioctl_channel(dev, irp);
 	    break;
 
+	  case UCR_MAKE_FRAME:
+	    status = dev_ioctl_make_frame(dev, irp);
+	    break;
+
+	  case UCR_FREE_FRAME:
+	    status = dev_ioctl_free_frame(dev, irp);
+	    break;
+
+	  case UCR_MMAP_FRAME:
+	    status = dev_ioctl_mmap(dev, irp);
+	    break;
+
+	  case UCR_MUNMAP_FRAME:
+	    status = dev_ioctl_munmap(dev, irp);
+	    break;
+
 	  default:
 	    printk("ise?: invalid IO control code %x\n", cmd);
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
@@ -412,6 +586,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.3  2001/09/04 02:47:09  steve
+ *  Add frame allocate/free/map/unmap controls.
+ *
  * Revision 1.2  2001/07/30 21:32:42  steve
  *  Rearrange the status path to follow the return codes of
  *  the callbacks, and preliminary implementation of the
