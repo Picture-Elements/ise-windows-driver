@@ -9,6 +9,7 @@
 
 
 static NTSTATUS dev_write_2(struct instance_t*xsp, IRP*irp);
+static void dev_write_cancel(struct instance_t*xsp, IRP*irp);
 
 NTSTATUS dev_write(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -72,7 +73,7 @@ static NTSTATUS dev_write_2(struct instance_t*xsp, IRP*irp)
 
 		  printk("ise%u.%u (d): flush loaded write buffer\n",
 			 xsp->id, xpd->channel, count-tcount);
-		  return flush_channel(xsp, irp, dev_write_2);
+		  return flush_channel(xsp, irp, dev_write_2, dev_write_cancel);
 	    }
       }
 
@@ -86,9 +87,18 @@ static NTSTATUS dev_write_2(struct instance_t*xsp, IRP*irp)
       return STATUS_SUCCESS;
 }
 
+static void dev_write_cancel(struct instance_t*xsp, IRP*irp)
+{
+      irp->IoStatus.Status = STATUS_CANCELLED;
+      irp->IoStatus.Information = 0;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+}
 
 /*
  * $Log$
+ * Revision 1.3  2001/09/06 22:53:56  steve
+ *  Flush can be cancelled.
+ *
  * Revision 1.2  2001/07/30 21:32:43  steve
  *  Rearrange the status path to follow the return codes of
  *  the callbacks, and preliminary implementation of the

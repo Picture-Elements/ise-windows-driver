@@ -35,6 +35,22 @@ static int write_ring_space_empty(struct channel_t*xpd)
       return xpd->table->first_out_idx == xpd->table->next_out_idx;
 }
 
+static void write_ring_cancel(DEVICE_OBJECT*dev, IRP*irp)
+{
+      struct channel_t*xpd = get_channel(irp);
+      struct instance_t*xsp = xpd->xsp;
+
+      KeInsertQueueDpc(&xsp->pending_write_dpc, 0, 0);
+      IoReleaseCancelSpinLock(irp->CancelIrql);
+}
+
+static void simple_flush_cancel(struct instance_t*xsp, IRP*irp)
+{
+      irp->IoStatus.Status = STATUS_CANCELLED;
+      irp->IoStatus.Information = 0;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+}
+
 /*
  * The wait_for_write_ring method is called by the flush code to
  * schedule the IRP for some time in the future when the write ring is
@@ -45,6 +61,7 @@ static int write_ring_space_empty(struct channel_t*xpd)
 static void wait_for_write_ring(struct instance_t*xsp,
 				struct channel_t*xpd,
 				IRP*irp, callback_t callback,
+				vcallback_t cancel,
 				ring_test_t tester)
 {
       unsigned long mask = dev_mask_irqs(xsp);
@@ -54,12 +71,18 @@ static void wait_for_write_ring(struct instance_t*xsp,
 		   " in wait_for_write_ring\n", xsp->id, xpd->channel);
       }
 
+      if (irp->Tail.Overlay.DriverContext[2] != 0) {
+	    printk("ise%u.%u: warning: DriverContext[2] overrun"
+		   " in wait_for_write_ring\n", xsp->id, xpd->channel);
+      }
+
       if (irp->Tail.Overlay.DriverContext[3] != 0) {
 	    printk("ise%u.%u: warning: DriverContext[3] overrun"
 		   " in wait_for_write_ring\n", xsp->id, xpd->channel);
       }
 
       irp->Tail.Overlay.DriverContext[0] = callback;
+      irp->Tail.Overlay.DriverContext[2] = cancel;
       irp->Tail.Overlay.DriverContext[3] = tester;
       ExInterlockedInsertTailList(&xsp->pending_write_irps,
 				  &irp->Tail.Overlay.ListEntry,
@@ -67,6 +90,8 @@ static void wait_for_write_ring(struct instance_t*xsp,
       IoMarkIrpPending(irp);
       irp->IoStatus.Status = STATUS_PENDING;
       KeInsertQueueDpc(&xsp->pending_write_dpc, 0, 0);
+
+      IoSetCancelRoutine(irp, write_ring_cancel);
 
       dev_unmask_irqs(xsp, mask);
 }
@@ -107,7 +132,6 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	    LIST_ENTRY*qe;
 	    IRP*irp;
 	    struct channel_t*xpd;
-	    callback_t call_fun;
 	    ring_test_t test_fun;
 
 	    qe  = RemoveHeadList(&tmp);
@@ -116,12 +140,25 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 
 	    test_fun = (ring_test_t) irp->Tail.Overlay.DriverContext[3];
 	    if ((*test_fun)(xpd)) {
+		    /* If the IRP is ready to continue, then call the
+		       main callback. */
 		  callback_t call_fun = (callback_t)
 			irp->Tail.Overlay.DriverContext[0];
 		  irp->Tail.Overlay.DriverContext[0] = 0;
+		  irp->Tail.Overlay.DriverContext[2] = 0;
 		  irp->Tail.Overlay.DriverContext[3] = 0;
 
 		  (*call_fun) (xsp, irp);
+
+	    } else if (irp->Cancel) {
+		    /* If the IRP was cancelled, then call the cancel
+		       callback instead. */
+		  callback_t call_fun = (callback_t)
+			irp->Tail.Overlay.DriverContext[2];
+		  irp->Tail.Overlay.DriverContext[0] = 0;
+		  irp->Tail.Overlay.DriverContext[2] = 0;
+		  irp->Tail.Overlay.DriverContext[3] = 0;
+		  (*call_fun)(xsp, irp);
 
 	    } else {
 
@@ -152,7 +189,8 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
  */
 static NTSTATUS flush_channel_2(struct instance_t*xsp, IRP*irp);
 
-NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp, callback_t callback)
+NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp,
+		       callback_t callback, vcallback_t cancel)
 {
       int rc;
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
@@ -168,7 +206,7 @@ NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp, callback_t callback)
       }
 
       irp->Tail.Overlay.DriverContext[1] = callback;
-      wait_for_write_ring(xsp, xpd, irp, flush_channel_2,
+      wait_for_write_ring(xsp, xpd, irp, flush_channel_2, cancel,
 			  write_ring_space_available);
       return STATUS_PENDING;
 }
@@ -235,6 +273,7 @@ static NTSTATUS sync_channel(struct instance_t*xsp, IRP*irp,
 
       irp->Tail.Overlay.DriverContext[1] = callback;
       wait_for_write_ring(xsp, xpd, irp, sync_channel_2,
+			  simple_flush_cancel,
 			  write_ring_space_empty);
       return STATUS_PENDING;
 }
@@ -254,10 +293,16 @@ static NTSTATUS sync_channel_2(struct instance_t*xsp, IRP*irp)
       return (*callback)(xsp, irp);
 }
 
+/*
+ * The dev_ioctl_flush function handles the DeviceIoControl directly
+ * from the user. In this case is simply makes up the parameters and
+ * calls the flush_channel. There is nothing special to do if the
+ * operation is cancelled.
+ */
 static NTSTATUS dev_ioctl_flush(DEVICE_OBJECT*dev, IRP*irp)
 {
       struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
-      return flush_channel(xsp, irp, complete_success);
+      return flush_channel(xsp, irp, complete_success, simple_flush_cancel);
 }
 
 static NTSTATUS dev_ioctl_sync_2(struct instance_t*xsp, IRP*irp);
@@ -268,7 +313,7 @@ static NTSTATUS dev_ioctl_sync(DEVICE_OBJECT*dev, IRP*irp)
       struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
       struct channel_t*xpd = get_channel(irp);
 
-      return flush_channel(xsp, irp, dev_ioctl_sync_2);
+      return flush_channel(xsp, irp, dev_ioctl_sync_2, simple_flush_cancel);
 }
 
 static NTSTATUS dev_ioctl_sync_2(struct instance_t*xsp, IRP*irp)
@@ -330,7 +375,8 @@ static NTSTATUS dev_ioctl_channel(DEVICE_OBJECT*dev, IRP*irp)
       irp->Tail.Overlay.DriverContext[0] = 0;
       irp->Tail.Overlay.DriverContext[1] = 0;
 
-      return flush_channel(xsp, irp, dev_ioctl_channel_2);
+      return flush_channel(xsp, irp, dev_ioctl_channel_2,
+			   simple_flush_cancel);
 }
 
 static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp);
@@ -637,6 +683,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.6  2001/09/06 22:53:56  steve
+ *  Flush can be cancelled.
+ *
  * Revision 1.5  2001/09/06 18:28:43  steve
  *  Read timeouts.
  *

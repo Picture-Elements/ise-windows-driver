@@ -9,6 +9,7 @@
 
 static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp);
 static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp);
+static void dev_read_flush_cancel(struct instance_t*xsp, IRP*irp);
 
 /*
  * This is the entry into the chain of events that leads to a read. I
@@ -45,7 +46,7 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp)
 	/* Start the read with a flush of the write side. This gets
 	   the board thinking about the last write command that I
 	   might have sent. */
-      return flush_channel(xsp, irp, &dev_read_2);
+      return flush_channel(xsp, irp, &dev_read_2, &dev_read_flush_cancel);
 }
 
 static void read_cancel(DEVICE_OBJECT*dev, IRP*irp);
@@ -310,8 +311,23 @@ void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2)
       IoCompleteRequest(irp, IO_NO_INCREMENT);
 }
 
+
+static void dev_read_flush_cancel(struct instance_t*xsp, IRP*irp)
+{
+      struct channel_t*xpd = get_channel(irp);
+
+      xpd->read_pending = 0;
+
+      irp->IoStatus.Status = STATUS_CANCELLED;
+      irp->IoStatus.Information = 0;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+}
+
 /*
  * $Log$
+ * Revision 1.5  2001/09/06 22:53:56  steve
+ *  Flush can be cancelled.
+ *
  * Revision 1.4  2001/09/06 18:28:43  steve
  *  Read timeouts.
  *

@@ -14,6 +14,7 @@
 struct instance_t;
 struct channel_t;
 typedef NTSTATUS (*callback_t)(struct instance_t*xsp, IRP*irp);
+typedef void  (*vcallback_t)(struct instance_t*xsp, IRP*irp);
 
 
 /* TheISE driver is the communication path into the target
@@ -74,7 +75,11 @@ extern NTSTATUS isex_run_program(DEVICE_OBJECT*dev, IRP*irp);
  *    block. At any rate, the callback will be called when there is
  *    space and the flush is completed.
  *
- *    This uses IRP DriverContext members 0, 1 and 3.
+ *    If the IRP is cancelled, the cancel callback is called
+ *    instead. It is up to the caller of flush_channel to supply a
+ *    cancel routine that completes the IRP.
+ *
+ *    This uses IRP DriverContext members 0, 1, 2 and 3.
  *
  * complete_success
  *    A commonly used callback, that just completes the IRP.
@@ -86,7 +91,8 @@ extern void root_to_board(struct instance_t*xsp, IRP*irp,
 			  callback_t fun);
 
 extern NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp,
-			      callback_t callback);
+			      callback_t callback,
+			      vcallback_t cancel);
 
 extern NTSTATUS complete_success(struct instance_t*xsp, IRP*irp);
 
@@ -281,6 +287,9 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.8  2001/09/06 22:53:56  steve
+ *  Flush can be cancelled.
+ *
  * Revision 1.7  2001/09/06 18:28:43  steve
  *  Read timeouts.
  *
