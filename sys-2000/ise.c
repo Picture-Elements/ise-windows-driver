@@ -395,7 +395,10 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
       struct channel_t*xpd = get_channel(irp);
 
       PHYSICAL_ADDRESS newrootl;
-      struct root_table*newroot = duplicate_root(xsp, &newrootl);
+      struct root_table*newroot = 0;
+
+      int channels_remaining_in_process = 0;
+      int channels_remaining_in_table = 0;
 
       if (xpd->proc != IoGetCurrentProcess()) {
 	    printk("ise%u.%u: close by wrong owner?!\n",
@@ -405,66 +408,90 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 	/* This shouldn't be necessary, but is defensive. */
       KeCancelTimer(&xpd->read_timer);
 
-	/* If this is the last channel for this process, then remove
-	   any frame mappings first. */
-      { unsigned count = 0, fidx;
-        struct channel_t*cur;
+	/* Count the number of channels remaining. Count by scanning
+	   the circular list back around to self. */
+      { struct channel_t*cur;
 	for (cur = xpd->next ;  cur != xpd ;  cur = cur->next) {
 	      if (cur->proc == xpd->proc)
-		    count += 1;
+		    channels_remaining_in_process += 1;
 	}
+      }
 
-	if (count == 0) for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
+	/* Count the number of channels remaning all together. This
+	   includes the channels held by other processes. We need this
+	   number to know if it is time to release the root table. */
+      if (xsp->root != 0) {
+	    unsigned idx;
+	    for (idx = 0 ;  idx < ROOT_TABLE_CHANNELS ;  idx += 1) {
+		  if (xsp->root->chan[idx].ptr != 0)
+			channels_remaining_in_table += 1;
+	    }
+      }
 
-	      if (xsp->frame_map[fidx].base
-		  && (xsp->frame_map[fidx].proc == xpd->proc)) {
-		    printk("ise%u.%u: unmap frame %u on final close.\n",
-			   xsp->id, xpd->channel, fidx);
+	/* If this is the last channel for this process, then remove
+	   any frame mappings first. */
+      if (channels_remaining_in_process == 0) {
+	    unsigned fidx;
+	    for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
 
-		    { IO_ERROR_LOG_PACKET*event;
-		      unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
-		      psize += 2*sizeof(ULONG);
-		      event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
-		      event->ErrorCode = ISE_FRAME_UNMAP_ON_CLOSE;
-		      event->UniqueErrorValue = 0;
-		      event->FinalStatus = STATUS_NO_MEMORY;
-		      event->MajorFunctionCode = IRP_MJ_CLOSE;
-		      event->IoControlCode = 0;
-		      event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
-		      event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
-		      event->DumpData[2] = fidx;
-		      IoWriteErrorLogEntry(event);
-		    }
+		  if (xsp->frame_map[fidx].base
+		      && (xsp->frame_map[fidx].proc == xpd->proc)) {
+			printk("ise%u.%u: unmap frame %u on final close.\n",
+			       xsp->id, xpd->channel, fidx);
 
-		    MmUnmapLockedPages(xsp->frame_map[fidx].base,
-				       xsp->frame_mdl[fidx]);
+			{ IO_ERROR_LOG_PACKET*event;
+			  unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+			  psize += 2*sizeof(ULONG);
+			  event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
+			  event->ErrorCode = ISE_FRAME_UNMAP_ON_CLOSE;
+			  event->UniqueErrorValue = 0;
+			  event->FinalStatus = STATUS_NO_MEMORY;
+			  event->MajorFunctionCode = IRP_MJ_CLOSE;
+			  event->IoControlCode = 0;
+			  event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
+			  event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
+			  event->DumpData[2] = fidx;
+			  IoWriteErrorLogEntry(event);
+			}
 
-		    xsp->frame_map[fidx].proc = 0;
-		    xsp->frame_map[fidx].base = 0;
+			MmUnmapLockedPages(xsp->frame_map[fidx].base,
+					   xsp->frame_mdl[fidx]);
 
-	      } else if (xsp->frame_map[fidx].base) {
-		    IO_ERROR_LOG_PACKET*event;
-		    unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
-		    psize += 2*sizeof(ULONG);
-		    event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
-		    event->ErrorCode = ISE_FRAME_DANGLE_ON_CLOSE;
-		    event->UniqueErrorValue = 0;
-		    event->FinalStatus = STATUS_NO_MEMORY;
-		    event->MajorFunctionCode = IRP_MJ_CLOSE;
-		    event->IoControlCode = 0;
-		    event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
-		    event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
-		    event->DumpData[2] = fidx;
-		    IoWriteErrorLogEntry(event);
-	      }
-	}
+			xsp->frame_map[fidx].proc = 0;
+			xsp->frame_map[fidx].base = 0;
+
+		  } else if (xsp->frame_map[fidx].base) {
+			IO_ERROR_LOG_PACKET*event;
+			unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+			psize += 2*sizeof(ULONG);
+			event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
+			event->ErrorCode = ISE_FRAME_DANGLE_ON_CLOSE;
+			event->UniqueErrorValue = 0;
+			event->FinalStatus = STATUS_NO_MEMORY;
+			event->MajorFunctionCode = IRP_MJ_CLOSE;
+			event->IoControlCode = 0;
+			event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
+			event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
+			event->DumpData[2] = fidx;
+			IoWriteErrorLogEntry(event);
+		  }
+	    }
       }
 
       cleanup_channel_standby_list(xsp);
 
-	/* Now start detaching the channel from the board. */
-      newroot->chan[xpd->channel].magic = 0;
-      newroot->chan[xpd->channel].ptr = 0;
+	/* Now start detaching the channel from the board. This is
+	   done by making a new root that writes out the channel
+	   tables. If this is the last channel, then removing the root
+	   table completely also has the effect of sending a "detach"
+	   to the target firmware. */
+      if (channels_remaining_in_table > 1) {
+	    newroot = duplicate_root(xsp, &newrootl);
+	    newroot->chan[xpd->channel].magic = 0;
+	    newroot->chan[xpd->channel].ptr = 0;
+      } else {
+	    newroot = 0;
+      }
 
       { NTSTATUS rc;
         rc = root_to_board(xsp, irp, newroot, newrootl, &dev_close_2);
@@ -501,19 +528,17 @@ static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp)
       }
       KeReleaseSpinLock(&xsp->mutex, save_irql);
 
-      if (xpd->table) {
-	      /* Release the table itself. Poison the memory first. */
-	    KeAcquireSpinLock(&xsp->mutex, &save_irql);
-	    xpd->table->self = 0;
-	    xpd->table->magic = 0x11111111;
-	    xpd->next = xsp->channel_standby_list;
-	    xsp->channel_standby_list = xpd;
-	    KeReleaseSpinLock(&xsp->mutex, save_irql);
+	/* RReady to release the table itself. Poison the memory
+	   first, then drop the channel structure in the the
+	   channel_standby_list. This allows the Free functions
+	   to be called at more opportune times. */
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
+      xpd->table->self = 0;
+      xpd->table->magic = 0x11111111;
+      xpd->next = xsp->channel_standby_list;
+      xsp->channel_standby_list = xpd;
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
 
-      } else {
-	      /* All done, release the channel_t object. */
-	    ExFreePool(xpd);
-      }
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = 0;
@@ -960,6 +985,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.16  2004/10/25 23:27:10  steve
+ *  Fix close to detach when the last channel is closed.
+ *
  * Revision 1.15  2004/10/25 19:04:49  steve
  *  Snapshot 20041005: Some more error logging.
  *
