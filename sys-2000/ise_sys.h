@@ -86,9 +86,9 @@ extern NTSTATUS isex_run_program(DEVICE_OBJECT*dev, IRP*irp);
  */
 
 struct root_table*duplicate_root(struct instance_t*xsp, PHYSICAL_ADDRESS*ptrl);
-extern void root_to_board(struct instance_t*xsp, IRP*irp,
-			  struct root_table*root, PHYSICAL_ADDRESS rootl,
-			  callback_t fun);
+extern NTSTATUS root_to_board(struct instance_t*xsp, IRP*irp,
+			      struct root_table*root, PHYSICAL_ADDRESS rootl,
+			      callback_t fun);
 
 extern NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp,
 			      callback_t callback,
@@ -300,6 +300,9 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.11  2002/06/14 16:09:29  steve
+ *  spin locks around root table manipulations.
+ *
  * Revision 1.10  2002/04/11 00:49:30  steve
  *  Move FreeCommonBuffers to PASSIVE_MODE using standby lists.
  *

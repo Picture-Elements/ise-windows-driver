@@ -87,14 +87,18 @@ static void cleanup_channel_standby_list(struct instance_t*xsp)
  */
 struct root_table*duplicate_root(struct instance_t*xsp, PHYSICAL_ADDRESS*ptrl)
 {
+      KIRQL save_irql;
       struct root_table*newroot;
 
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
       if (xsp->root_standby) {
 	    newroot = xsp->root_standby;
 	    *ptrl = xsp->rootl_standby;
 	    xsp->root_standby = 0;
+	    KeReleaseSpinLock(&xsp->mutex, save_irql);
 
       } else {
+	    KeReleaseSpinLock(&xsp->mutex, save_irql);
 	    newroot = (struct root_table*)
 		  xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
 				     sizeof(struct root_table), ptrl, FALSE);
@@ -136,7 +140,7 @@ struct root_table*duplicate_root(struct instance_t*xsp, PHYSICAL_ADDRESS*ptrl)
  */
 static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
-void root_to_board(struct instance_t*xsp, IRP*irp,
+NTSTATUS root_to_board(struct instance_t*xsp, IRP*irp,
 		   struct root_table*root, PHYSICAL_ADDRESS rootl,
 		   callback_t fun)
 {
@@ -173,6 +177,7 @@ void root_to_board(struct instance_t*xsp, IRP*irp,
 
       dev_unmask_irqs(xsp, mask);
       KeReleaseSpinLock(&xsp->mutex, save_irql);
+      return STATUS_PENDING;
 }
 
 NTSTATUS complete_success(struct instance_t*xsp, IRP*irp)
@@ -186,19 +191,26 @@ NTSTATUS complete_success(struct instance_t*xsp, IRP*irp)
 static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 {
       struct instance_t*xsp = (struct instance_t*)ctx;
-      IRP*irp = xsp->root_irp;
+      IRP*irp;
+
+      KeAcquireSpinLockAtDpcLevel(&xsp->mutex);
+
+      irp = xsp->root_irp;
 
 	/* Detect possible spurious DPC calls. Maybe there is no IRP
 	   waiting, or maybe the ISE board is not yet finished the
 	   change. */
-      if (irp == 0)
+      if (irp == 0) {
+	    KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 	    return;
+      }
 
       if (dev_get_root_table_resp(xsp) != (xsp->root2? xsp->root2->self : 0)) {
 	    printk("ise%u: warning: root not received yet: "
 		   "resp=%x, self=%x.\n", xsp->id,
 		   dev_get_root_table_resp(xsp),
 		   (xsp->root2? xsp->root2->self : 0));
+	    KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 	    return;
       }
 
@@ -224,6 +236,7 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
  complete:
       { callback_t callback = xsp->root_callback;
         xsp->root_callback = 0;
+	KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 	(*callback)(xsp, irp);
       }
 }
@@ -237,6 +250,7 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
  */
 NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 {
+      KIRQL save_irql;
       unsigned idx;
       struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
       struct channel_t*xpd;
@@ -318,6 +332,7 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 	   arriving packets can be properly dispatched to the
 	   process. */
 
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
       if (xsp->channels == 0) {
 	    xsp->channels = xpd;
 	    xpd->next = xpd;
@@ -328,6 +343,7 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 	    xpd->next->prev = xpd;
 	    xpd->prev->next = xpd;
       }
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
 
       if (debug_flag & UCR_TRACE_CHAN)
 	    printk("ise%u: create channel\n", xsp->id);
@@ -336,11 +352,19 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 	/* Make a new root table with this new channel, then start the
 	   transfer to the target board. This thread goes pending at
 	   this point. */
-      { PHYSICAL_ADDRESS newrootl;
+      { NTSTATUS rc;
+        PHYSICAL_ADDRESS newrootl;
         struct root_table*newroot = duplicate_root(xsp, &newrootl);
         newroot->chan[0].magic = xpd->table->magic;
 	newroot->chan[0].ptr   = xpd->table->self;
-	root_to_board(xsp, irp, newroot, newrootl, &complete_success);
+
+	rc = root_to_board(xsp, irp, newroot, newrootl, &complete_success);
+	if (rc != STATUS_PENDING) {
+	      irp->IoStatus.Status = rc;
+	      printk("ise%u: error from root_to_board\n", xsp->id);
+	      goto error_cleanup;
+	}
+
 	return STATUS_PENDING;
       }
 
@@ -410,12 +434,23 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 	/* Now start detaching the channel from the board. */
       newroot->chan[xpd->channel].magic = 0;
       newroot->chan[xpd->channel].ptr = 0;
-      root_to_board(xsp, irp, newroot, newrootl, &dev_close_2);
+
+      { NTSTATUS rc;
+        rc = root_to_board(xsp, irp, newroot, newrootl, &dev_close_2);
+	if (rc != STATUS_PENDING) {
+	      irp->IoStatus.Status = rc;
+	      irp->IoStatus.Information = 0;
+	      printk("ise%u: close error from root_to_board\n", xsp->id);
+	      IoCompleteRequest(irp, IO_NO_INCREMENT);
+	      return rc;
+	}
+      }
       return STATUS_PENDING;
 }
 
 static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp)
 {
+      KIRQL save_irql;
       struct channel_t*xpd = get_channel(irp);
 
       if (debug_flag & UCR_TRACE_CHAN)
@@ -424,6 +459,7 @@ static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp)
 	/* No more communication with the target channel, so remove
 	   the channel_t structure from the channel list. */
 
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
       if (xsp->channels == xpd)
 	    xsp->channels = xsp->channels->next;
       if (xsp->channels == xpd)
@@ -432,13 +468,16 @@ static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp)
 	    xpd->prev->next = xpd->next;
 	    xpd->next->prev = xpd->prev;
       }
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
 
       if (xpd->table) {
 	      /* Release the table itself. Poison the memory first. */
+	    KeAcquireSpinLock(&xsp->mutex, &save_irql);
 	    xpd->table->self = 0;
 	    xpd->table->magic = 0x11111111;
 	    xpd->next = xsp->channel_standby_list;
 	    xsp->channel_standby_list = xpd;
+	    KeReleaseSpinLock(&xsp->mutex, save_irql);
 
       } else {
 	      /* All done, release the channel_t object. */
@@ -800,6 +839,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.13  2002/06/14 16:09:29  steve
+ *  spin locks around root table manipulations.
+ *
  * Revision 1.12  2002/05/13 20:07:52  steve
  *  More diagnostic detail, and check registers.
  *

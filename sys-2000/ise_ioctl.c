@@ -444,7 +444,16 @@ static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
 
       xpd->channel = (unsigned short)arg;
 
-      root_to_board(xsp, irp, newroot, newrootl, complete_success);
+      { NTSTATUS rc;
+        rc = root_to_board(xsp, irp, newroot, newrootl, complete_success);
+	if (rc != STATUS_PENDING) {
+	      irp->IoStatus.Status = rc;
+	      irp->IoStatus.Information = 0;
+	      printk("ise%u: ioctl(CHAN) error from root_to_board\n", xsp->id);
+	      IoCompleteRequest(irp, IO_NO_INCREMENT);
+	      return rc;
+	}
+      }
       return STATUS_PENDING;
 }
 
@@ -517,7 +526,16 @@ static NTSTATUS dev_ioctl_make_frame(DEVICE_OBJECT*dev, IRP*irp)
       newroot->frame_table[fidx].ptr   = xsp->frame_tab[fidx]->self;
       newroot->frame_table[fidx].magic = xsp->frame_tab[fidx]->magic;
 
-      root_to_board(xsp, irp, newroot, newrootl, make_frame_complete);
+      { NTSTATUS rc;
+        rc = root_to_board(xsp, irp, newroot, newrootl, make_frame_complete);
+	if (rc != STATUS_PENDING) {
+	      irp->IoStatus.Status = rc;
+	      irp->IoStatus.Information = 0;
+	      printk("ise%u: ioctl(MAKE) error from root_to_board\n", xsp->id);
+	      IoCompleteRequest(irp, IO_NO_INCREMENT);
+	      return rc;
+	}
+      }
       return STATUS_PENDING;
 }
 
@@ -577,7 +595,16 @@ static NTSTATUS dev_ioctl_free_frame(DEVICE_OBJECT*dev, IRP*irp)
       newroot->frame_table[fidx].ptr   = 0;
       newroot->frame_table[fidx].magic = 0;
 
-      root_to_board(xsp, irp, newroot, newrootl, free_frame_complete);
+      { NTSTATUS rc;
+        rc = root_to_board(xsp, irp, newroot, newrootl, free_frame_complete);
+	if (rc != STATUS_PENDING) {
+	      irp->IoStatus.Status = rc;
+	      irp->IoStatus.Information = 0;
+	      printk("ise%u: ioctl(FREE) error from root_to_board\n", xsp->id);
+	      IoCompleteRequest(irp, IO_NO_INCREMENT);
+	      return rc;
+	}
+      }
       return STATUS_PENDING;
 }
 
@@ -783,6 +810,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.12  2002/06/14 16:09:29  steve
+ *  spin locks around root table manipulations.
+ *
  * Revision 1.11  2001/10/04 20:51:44  steve
  *  Handle low memory when allocating frames.
  *
