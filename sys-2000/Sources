@@ -1,0 +1,9 @@
+
+TARGETNAME=ise
+TARGETPATH=.
+TARGETTYPE=DRIVER
+INCLUDES=../sys-common
+
+SOURCES=entry.c console.c dev.c ise.c ise_ioctl.c ise_read.c ise_write.c isex.c vers.rc
+
+NTTARGETFILE0=isem.h

@@ -1,0 +1,112 @@
+; ise.inf
+;
+; Installation file (.inf) for the ISE device.
+;
+; (c) Copyright 2001 Picture Elements, Inc. 
+;
+
+[Version]
+Signature="$Windows NT$"
+; We are Picture Elements.
+Provider=%picturel%
+Class=Image
+ClassGuid={6bdd1fc6-810f-11d0-bec7-08002be2092f}
+;CatalogFile=ise.cat
+
+DriverVer=11/02/2000,0.0.0.0
+
+;
+; Driver information
+;
+
+[Manufacturer]
+; This lists the manufacturers who provide software via this
+; INF file, and binds to that manufacturer a section that
+; lists the stuff that that manufacturer installs.
+%picturel%   = picturel.Mfg
+
+
+[picturel.Mfg]
+; Picture Elements supports these device models. The hardware
+; id is matched up with discovered boards in order to select
+; one of these records. The record in turn references an
+; install section.
+%picturel.ise% = ise.Install, PCI\VEN_12C5&DEV_007f
+
+
+[DestinationDirs]
+; Put the driver file into the %SystemRoot%\system32\drivers directory,
+; or whatever is appropriate for the system.
+DefaultDestDir=12
+
+
+;; Starting here, describe the source media (a directory) and the
+;; contained files that are interesting for this device.
+
+
+[SourceDisksNames]
+; This is a completely abstract name. It assigns a readable
+; name to the source media, and any subdirectory under the
+; root of that media. Since this INF file is really meant
+; to be in a directory with the driver, this is essentially
+; a stub.
+1 = %ISE_Driver_Collection%,,,
+
+[SourceDisksFiles]
+; No cross-platform files for drivers.
+
+[SourceDisksFiles.x86]
+; The ise.sys file is the main payload, and is in the i386
+; subdirectory of the media.
+ise.sys=1,i386
+
+
+[ise.Install.ntx86]
+CopyFiles=ise.Files.Driver.NTx86
+
+[ise.Files.Driver.ntx86]
+ise.sys,,,2
+
+
+[ise.Install.NTx86.Services]
+AddService = ise, 0x00000002 , ise.Service, ise.EventLog
+
+
+[ise.Service]
+DisplayName    = %picturel.ise%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
+ServiceBinary  = %10%\system32\drivers\ise.sys
+
+
+[ise.EventLog]
+AddReg = ise.EventLog.AddReg
+
+[ise.EventLog.AddReg]
+HKR,,EventMessageFile,0x00020000,"%SystemRoot%\System32\IoLogMsg.dll;%SystemRoot%\System32\drivers\ise.sys"
+HKR,,TypesSupported,0x00010001,7
+
+
+
+
+[Strings]
+
+;
+; Non-Localizable Strings
+;
+
+;REG_SZ         = 0x00000000
+;REG_MULTI_SZ   = 0x00010000
+;REG_EXPAND_SZ  = 0x00020000
+;REG_BINARY     = 0x00000001
+;REG_DWORD      = 0x00010001
+;SERVICEROOT    = "System\CurrentControlSet\Services"
+
+;
+; Localizable Strings
+;
+
+picturel.ise = "Picture Elements, Imaging Subsystem Engine"
+picturel = "Picture Elements, Inc."
+ISE_Driver_Collection = "ISE Driver Collection"
