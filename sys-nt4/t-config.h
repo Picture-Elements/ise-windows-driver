@@ -70,6 +70,7 @@ static __inline__ void dev_init_hardware(unsigned long dev)
 {
       writel(0x0fffffff, dev+OUTBELLS);
       writel(0, dev+INBOUND0);
+      writel(0, dev+INBOUND1);
       writel(0, dev+OUTBOUND0);
       writel(0xfb, dev+OIMR);
 }
@@ -184,6 +185,9 @@ static __inline__ void dev_unmask_irqs(unsigned long dev, unsigned long mask)
 #endif
 /*
  * $Log$
+ * Revision 1.2  2002/06/28 23:13:32  steve
+ *  Slightly more thorough init.
+ *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
  *
