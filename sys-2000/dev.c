@@ -62,6 +62,21 @@ unsigned long dev_get_root_table_resp(struct instance_t*xsp)
 }
 
 /*
+ * The status resp and value registers are the OMR1 and IMR1 regisers.
+ */
+__u32 dev_get_status_resp(struct instance_t*xsp)
+{
+	/* return OMR1 */
+      return READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x1c));
+}
+
+void dev_set_status_value(struct instance_t*xsp, __u32 value)
+{
+	/* IMR1 = value; */
+      WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x14), value);
+}
+
+/*
  * Return the mask of bells that are currently set, and clear them in
  * the hardware as I do it. Note that if the interrupt is blocked,
  * then pretend no bells are set. This allows the IRQ to use the mask
@@ -98,6 +113,9 @@ void dev_unmask_irqs(struct instance_t*xsp, unsigned long mask)
 
 /*
  * $Log$
+ * Revision 1.2  2001/08/03 17:39:41  steve
+ *  Use status method to run programs.
+ *
  * Revision 1.1  2001/07/26 00:31:30  steve
  *  Windows 2000 driver.
  *

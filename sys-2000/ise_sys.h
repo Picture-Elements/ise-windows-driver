@@ -205,6 +205,9 @@ extern void dev_set_root_table_resp(struct instance_t*xsp, __u32 value);
 
 extern unsigned long dev_get_root_table_resp(struct instance_t*xsp);
 
+extern __u32 dev_get_status_resp(struct instance_t*xsp);
+extern void  dev_set_status_value(struct instance_t*xsp, __u32 value);
+
 # define ROOT_TABLE_BELLMASK 0x01
 # define STATUS_BELLMASK     0x02
 # define CHANGE_BELLMASK     0x04
@@ -225,6 +228,9 @@ extern void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.3  2001/08/03 17:39:41  steve
+ *  Use status method to run programs.
+ *
  * Revision 1.2  2001/07/30 21:32:42  steve
  *  Rearrange the status path to follow the return codes of
  *  the callbacks, and preliminary implementation of the
