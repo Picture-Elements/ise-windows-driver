@@ -28,7 +28,7 @@ struct ConsoleExt {
 static struct ConsoleExt*cons = 0;
 static DEVICE_OBJECT*devp = 0;
 
-unsigned long debug_flag = 0x0008;
+unsigned long debug_flag = 0x0000;
 
 /*
  * The ISECONS virtual device provides access to the debug log space
@@ -309,6 +309,9 @@ NTSTATUS create_console(DRIVER_OBJECT*drv)
 
 /*
  * $Log$
+ * Revision 1.3  2001/09/06 01:25:36  steve
+ *  Default debug flags off.
+ *
  * Revision 1.2  2001/07/30 21:32:42  steve
  *  Rearrange the status path to follow the return codes of
  *  the callbacks, and preliminary implementation of the
