@@ -176,6 +176,7 @@ static NTSTATUS xxPnP(DEVICE_OBJECT*fdo, IRP*irp)
       return STATUS_SUCCESS;
 }
 
+
 static NTSTATUS wakeup_completer(DEVICE_OBJECT*fdo, IRP*irp, KEVENT*ev)
 {
       KeSetEvent(ev, 0, FALSE);
@@ -326,6 +327,28 @@ static NTSTATUS AddDevice(DRIVER_OBJECT*drv, DEVICE_OBJECT*pdo)
       return STATUS_SUCCESS;
 }
 
+/*
+ * No power management supported.
+ */
+static NTSTATUS xxPower(DEVICE_OBJECT*fdo, IRP*irp)
+{
+      struct instance_t*xsp = (struct instance_t*)fdo->DeviceExtension;
+
+      PoStartNextPowerIrp(irp);
+      IoSkipCurrentIrpStackLocation(irp);
+      return PoCallDriver(xsp->next_dev, irp);
+}
+
+/*
+ * Not a WMI data provider.
+ */
+static NTSTATUS xxSystemControl(DEVICE_OBJECT*fdo, IRP*irp)
+{
+      struct instance_t*xsp = (struct instance_t*)fdo->DeviceExtension;
+      IoSkipCurrentIrpStackLocation(irp);
+      return IoCallDriver(xsp->next_dev, irp);
+}
+
 static void unload(DRIVER_OBJECT*drv)
 {
       DbgPrint("ise: unloading driver\n");
@@ -340,6 +363,8 @@ NTSTATUS DriverEntry(DRIVER_OBJECT*drv, UNICODE_STRING*path)
       drv->MajorFunction[IRP_MJ_WRITE]  = xxwrite;
       drv->MajorFunction[IRP_MJ_DEVICE_CONTROL] = xxioctl;
       drv->MajorFunction[IRP_MJ_PNP]    = xxPnP;
+      drv->MajorFunction[IRP_MJ_POWER]  = xxPower;
+      drv->MajorFunction[IRP_MJ_SYSTEM_CONTROL] = xxSystemControl;
       drv->DriverUnload = unload;
       drv->DriverExtension->AddDevice = AddDevice;
 
@@ -354,6 +379,9 @@ NTSTATUS DriverEntry(DRIVER_OBJECT*drv, UNICODE_STRING*path)
 
 /*
  * $Log$
+ * Revision 1.2  2002/04/10 21:05:30  steve
+ *  Add stup WMI and Power functions
+ *
  * Revision 1.1  2001/07/26 00:31:30  steve
  *  Windows 2000 driver.
  *
