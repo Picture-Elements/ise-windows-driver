@@ -1,0 +1,307 @@
+
+UCR CHANNEL PROTOCOL -- TABLE IMPLEMENTATION
+
+The Host side device driver supports communication with programs on
+the ISE board using a channel protocol described here. The protocol is
+designed so that all the state is kept in the host. The ISE board is
+referred to the state by a single pointer to a table that contains
+pointers to all the remaining information. This table is the "root"
+table.
+
+The device driver, when loaded, sets up a channel description tree
+for each ISE board in the system. The driver then connects the ISE
+board to that table by writing to an I960Rx message register the
+address of that table. The driver signals the presence of a new or
+changed root pointer by signalling an assigned doorbel register.
+
+The tables all have two 32bit integers in the beginning that serve as
+magic numbers. The very first is a magic number that identifies the
+object. The second is the (bus) base address of the table itself. Any
+table entry that refers to another table uses two numbers: the base
+address and the magic number. The magic number in the referring table
+is compared with that in the referred table, and must match.
+
+The root table has a predefined magic number. All the remaining tables
+have magic numbers defined as the tables are built up and stored in
+the referring table.
+
+Each table is in physically contiguous memory, so that the ISE board
+can access them without guessing the host page translation. Normally,
+the tables are less then the size of a host page. The tables can be
+spread through memory and are located by a referring pointer.
+
+DESIGN CONSTRAINTS
+
+There are some design constraints that to some degree dictated how
+things work. These constraints also make clear why some asymmetries
+and apparently inelegant proceedures exist. They are probably required to
+support these constraints.
+
+	1) The ISE board cannot expect that the driver is installed.
+
+	   This constraint means that the ISE board cannot send a
+	   signal to the ISE board and require that it respond right
+	   away, or at all.
+
+	2) All host driver state must exist in host memory.
+
+	   The ISE board can read tables in host memory, but the state
+	   for the driver most remain there. The program on the ISE
+	   board can be killed, hung, restarted, or stubborn. If
+	   driver state is kept on the ISE board, the driver will be
+	   hung along with the board.
+
+	3) As much as possible, allow for interrupts to be missed.
+
+	   This constraint allows for more independence between the
+	   driver and the target. It prevents hangs where none is
+	   needed.
+
+	4) Integers are Little-endian
+
+	   There is an i960 on the ISE board, and frankly that is
+	   likely to be the slowest CPU in any configuration
+	   containing the ISE board.
+
+REGISTERS IN THE ISE BOARD
+
+The basic communication with the ISE board uses an inbound and
+outbound mailbox registers and the doorbell registers. The mailbox
+registers are used to communicate the root table and changes to the
+root table. The doorbell interrupts are used to signal significant
+changes, such as changes to channels themselves.
+
+- Root Table Base Address (IMR0 and OMR0)
+
+The host uses the IMR0 register to send a root table base address to
+the target board. The host writes to the IMR0 register the address of
+the table, and signals the inbound BELL0 to interrupt the board. The
+board then reads the new base register, copies it to the OMR0
+register, and responds with the outbound BELL0. This handshake is used
+by the host and the target board to synchronize the changing of the
+root table.
+
+A root table is read-only. The ISE board never changes the root
+table. The host driver can change the contents of the root table only
+by creating a new table and replacing the old table. This eases
+synchronization between the host and ISE board. The ISE board can
+therefore synchronize changes to the tables by affecting the root
+table switch.
+
+In any case, the ISE board is required to respond to a root table
+switch within 4 seconds. If it does not, the host driver is allowed to
+assume that the ISE board is hung.
+
+Adding a channel or removing a channel requires a root table
+change. The removal (closing) of a channel is especially tricky
+because the target board must be prevented from writing data to the
+host channel buffers after the channel has been closed. To do
+otherwise can cause bedlam on the host operating system.
+
+Therefore, it is necessary to synchronize root table changes.
+
+- BELL summary
+
+There is an array of inbound (to the ISE board) and outbound doorbell
+interrupts that are used to send asynchronous signals back and
+forth. The summary of how the bells is used is as follows:
+
+       IN			       OUT
+	0    The root table pointer	0    root table change ACK
+	     has changed.
+
+	1    status message	        1    status ACK
+
+	2    channel change		2    channel change
+
+ROOT TABLE
+
+The ISE board software never writes to the root table. The root table
+base address is written by the driver into the IMR0 register and is
+left untouched as long as the root table doesn't change.
+
+	 0	MAGIC NUMBER  (0x1ead1eaf)
+	 4	self
+	 8	frame 0 ptr
+	12	frame 0 magic number
+	   ...
+	128	frame 15 ptr
+	132	frame 15 magic number
+	136	channel 0 base
+	140	channel 0 magic number
+	   ...
+	xx	channel x base
+	xx	channel x magic number
+
+FRAME TABLES
+
+The ISE board never writes to the frame table. The driver cannot
+update this table either, except by removing it and reintroducing
+it. So, the driver does not add a frame table until the frame is
+created.
+
+         0	MAGIC NUMBER
+	 4	self
+	 8	page size
+	12	page count
+	16	page 0 base
+	20	page 1 base
+	   ...
+	N*4+16	page N base
+
+The frame table is physically contiguous in memory. If a 256MByte
+frame is desired, the operating system needs to find 262160 bytes of
+physically contiguous memory to hold the frame table. (If you are
+setting aside 256MBytes of memory for a frame, 256K shouldn't be hard
+to find.)
+
+CHANNEL TABLES
+
+The channel table is more complicated then the others in that the host
+driver *and* the ISE board program can update this table. The host
+driver can update it to add buffers (input or output) and the ISE
+board can update it to consume buffers.
+
+	 0	MAGIC NUMBER
+	 4	self
+	 8	reserved
+	12	reserved
+	16	first out buffer ptr
+	20	next out buffer ptr
+	24	first in buffer ptr
+	28	next in buffer ptr
+	32	buffer 0 base
+		buffer 0 count
+	   ...
+	88	buffer 8 base
+	92	buffer 8 count
+
+The 8 buffers are divided into 4 input and 4 output buffers. The
+output buffers are filled by the driver before being placed in the
+list. The input buffers are filled by the ISE board.
+
+The "first out buffer ptr" indexes the first buffer that is ready
+for the ISE board to consume. When the ISE board wants data, it reads
+from the first out buffer until it is finished, then increments it to
+the next output buffer in the ring.
+
+The "next out buffer ptr" is where the driver writes the next buffer
+of data. The host uses that index to locate the buffer info, and
+writes the pointer to the buffer base. It then increments the next out
+buffer ptr to show that the buffer is ready.
+
+If the first out buffer ptr == next out buffer ptr, the ISE board
+concludes that the channel is empty. If (next + 1)%4 == first then the
+driver concludes that the channel is full.
+
+Every time the host driver manipulates fields in one of the channel
+tables, it sends a "channel change" doorbell. This signal is shared by
+all the channels, but on the ISE board only threads that are blocked
+waiting for channel data actually need to respond to the interrupt.
+
+There is no response to the interrupt generated. The host driver need
+not insure that the ISE board actually handled the interrupt, the ISE
+board is required to handle doubled-up interrupts.
+
+
+FILE MARKS
+
+A file mark is an in-band mark in the output stream that can be used
+to separate logical files. This is much like the tape mark that tape
+drives support. The file mark is principally used to send an EOF
+indication to the ISE board.
+
+A file mark is sent by sending a buffer with length 0. The target
+software is expected to understand this as a file mark, and set flags
+locally as appropriate.
+
+
+CONCURRENCY AND SYNCHRONIZATION
+
+Since there are at least two processors accessing the channel tables
+of the channel protocol, there are some synchronization issues. This
+section works through them one by one, and describes how they are
+properly dealt with.
+
+-- The Root Table
+
+First of all, there is the root table. This table is only read by the
+ISE board, so ISE software cannot create synchronization
+troubles. However, the host driver needs to occasionally add or remove
+channels or frames. This must be managed.
+
+The host driver in practice never modifies a root table. To change
+entries, it instead creates a new table, updates that copy, and
+installs it as the new root table. It is this installation process
+where synchronization happens. After the new table is created, the
+driver writes the new root base address to the IMR0 regster and
+signals IN BELL0. The installation is not complete until the ISE board
+responds by copying the root table pointer to the OMR0 register and
+signalling with OUT BELL0.
+
+The ISE board software can lock the root table by blocking the IN
+BELL0 interrupts. As long as it refuses to respond to the root table
+change, the old root table remains in force. (The host driver may
+assume the board is hung if the ISE board does not respond in a
+reasonable amount of time.)
+
+The ISE board can never initiate a root table change.
+
+-- Frame Tables
+
+The frame tables are read-only. Once installed, neither the ISE board
+nor the host driver are allowed to write to a frame table. The only
+way to change a frame table is to remove it first.
+
+Installing and removing a frame infolves manipulating the root table
+by the previously described mechinism, so frame table changes are
+synchronized as a side effect of root table synchronization. The ISE
+board must realize however that any frame table may be revoked if the
+root table is changed.
+
+-- Channel Tables
+
+These are more complicated, as there are fields that can be written by
+the ISE board and other fields that can be written by the host driver.
+
+First of all, the creation and removal of channel tables requires root
+table changes, so that problem is handled. Also, the constant fields
+(buffer pointers and magic numbers) are constant so do not need any
+extra synchronization.
+
+The in and out index fields, however, can change. The ISE board may
+write the in next and out first indices, and the host driver may write
+the in first and out next indices. The fields that may be written by
+one can be read by the other.
+
+To handle this case, more doorbell interrupt bits are assigned. The IN
+BELL 2 interrupt to the ISE board is assigned to tell the ISE board
+that the driver has written values, and the OUT BELL 2 interrupt to
+the host is assigned to tell the dirver that the ISE board has written
+values. First, how the host writes values.
+
+The host writes values simply by writing whatever index fields it
+needs to edit, then sending the IN BELL 2 to the ISE board. The ISE
+board understands this interrupt to mean that something change on any
+of the channels. The ISE board software then rechecks values of
+interrest. This is sufficient because there is only one writer (the
+driver) for the interesting index words, and 32bit writes on the PCI
+bus can reasonably be considered atomic.
+
+If the host interrupts again before the ISE responds to the previous
+interrupt, nothing is lost becase the software checks all values of
+interest. The ISE board must also handle the case where it reads a
+value before the host interrupts.
+
+The ISE board writes values by the opposite procedure, using OUT
+BELL-2 to interrupt the host. It works for the same reasons.
+
+-- Channel Buffers.
+
+The ISE board, during normal channel manipulations, accesses buffers
+on the host that are used for channel data. The ISE board must prevent
+closing of channels while it is doing this. The only way for the host
+to close a channel is to update the root table, so the ISE board can
+lock channel buffers by simply preventing a root table change.
+
+And thus, everything is synchronized.
