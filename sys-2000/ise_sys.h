@@ -214,6 +214,15 @@ struct channel_t {
 	/* Process id to identify the owner. */
       PEPROCESS proc;
 
+	/* This is the read timeout, in milliseconds. */
+      long read_timeout;
+	/* The actual timer for read timeouts. */
+      KTIMER read_timer;
+	/* The DPC to handle read timeouts. */
+      KDPC read_timer_dpc;
+	/* This is the IRP that is waiting for a read. */
+      IRP*volatile read_pending;
+
 	/* This is the table that represents the channel for the ISE
 	   board and the driver. */
       PHYSICAL_ADDRESS tablel;
@@ -268,9 +277,13 @@ extern unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
  */
 extern void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 extern void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
+extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.7  2001/09/06 18:28:43  steve
+ *  Read timeouts.
+ *
  * Revision 1.6  2001/09/05 22:05:55  steve
  *  protect mappings from misused or forgotten unmaps.
  *

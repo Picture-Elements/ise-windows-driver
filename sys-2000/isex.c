@@ -149,6 +149,56 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
       return irp->IoStatus.Status;
 }
 
+static NTSTATUS isex_timeout(DEVICE_OBJECT*dev, IRP*irp)
+{
+      struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
+      struct channel_t*xpd;
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+
+      struct ucrx_timeout_s*arg;
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof(*arg)) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      arg = (struct ucrx_timeout_s*)irp->AssociatedIrp.SystemBuffer;
+
+      xpd = channel_by_id(xsp, arg->id);
+
+	/* Make sure the channel really does exist. */
+      if (xpd == 0) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+	/* If this is any value other then force, then just write the
+	   new timeout into the channel structure. It will take effect
+	   automatically when the next read is started. */
+      if (arg->read_timeout != UCRX_TIMEOUT_FORCE) {
+	    xpd->read_timeout = arg->read_timeout;
+	    irp->IoStatus.Status = STATUS_SUCCESS;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return irp->IoStatus.Status;
+      }
+
+      
+	/*  Invoke the read timeout explicitly for the selected
+	    channel. The read_timeout function handles synchronization
+	    with the reads and read cancels. */
+      KeCancelTimer(&xpd->read_timer);
+      read_timeout(0, xpd, 0, 0);
+
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return irp->IoStatus.Status;
+}
+
 static NTSTATUS isex_set_trace(DEVICE_OBJECT*dev, IRP*irp)
 {
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
@@ -182,6 +232,9 @@ NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 	  case UCRX_RUN_PROGRAM:
 	    return isex_run_program(dev, irp);
+
+	  case UCRX_TIMEOUT:
+	    return isex_timeout(dev, irp);
 
 	  case UCRX_SET_TRACE:
 	    return isex_set_trace(dev, irp);
@@ -295,6 +348,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.4  2001/09/06 18:28:43  steve
+ *  Read timeouts.
+ *
  * Revision 1.3  2001/08/14 22:25:30  steve
  *  Add SseBase device
  *

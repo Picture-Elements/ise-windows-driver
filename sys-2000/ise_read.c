@@ -22,7 +22,16 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp)
       struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
       struct channel_t*xpd = get_channel(irp);
 
+	/* Make sure there are not currently pending reads already. */
+      if (xpd->read_pending) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
       xsp->pending_read_count.scheduled += 1;
+      xpd->read_pending = irp;
 
 	/* Steal the ByteOffset member as a progress pointer for the
 	   actual read operation. This allows me to span function
@@ -58,12 +67,36 @@ static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
 
 	/* If I can't read *any* data, then wait until I can. */
       if (CHANNEL_IN_EMPTY(xpd)) {
+
+	      /* If the read_timeout is 0, then this is a poll. Return
+		 a byte count of 0 and complete the request. */
+	    if (xpd->read_timeout == 0) {
+		  dev_unmask_irqs(xsp, mask);
+		  xpd->read_pending = 0;
+		  irp->IoStatus.Status = STATUS_SUCCESS;
+		  irp->IoStatus.Information = 0;
+		  IoCompleteRequest(irp, IO_NO_INCREMENT);
+		  return STATUS_SUCCESS;
+	    }
+
 	    irp->Tail.Overlay.DriverContext[0] = &dev_read_3;
 	    ExInterlockedInsertTailList(&xsp->pending_read_irps,
 					&irp->Tail.Overlay.ListEntry,
 					&xsp->pending_read_sync);
 	    IoMarkIrpPending(irp);
 	    irp->IoStatus.Status = STATUS_PENDING;
+
+	      /* If there is a timeout, then set the timeout value and
+		 start the timer. */
+	    if (xpd->read_timeout > 0) {
+		  LARGE_INTEGER due_time;
+		  due_time = RtlEnlargedIntegerMultiply(
+				    xpd->read_timeout, 10000);
+		  KeSetTimer(&xpd->read_timer,
+			     RtlLargeIntegerNegate(due_time),
+			     &xpd->read_timer_dpc);
+	    }
+
 	    IoSetCancelRoutine(irp, &read_cancel);
 	    dev_unmask_irqs(xsp, mask);
 	    return STATUS_PENDING;
@@ -99,7 +132,6 @@ static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp)
 
       bytes  += stp->Parameters.Read.ByteOffset.LowPart;
       tcount -= stp->Parameters.Read.ByteOffset.LowPart;
-
 
 	/* By now we believe that there is at least some data to be
 	   read. That means no more blocking. Read what we can into
@@ -145,6 +177,7 @@ static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp)
 
       xsp->pending_read_count.complete += 1;
 
+      xpd->read_pending = 0;
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = stp->Parameters.Read.ByteOffset.LowPart;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -218,6 +251,9 @@ void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	    if (irp->Cancel)
 		  continue;
 
+	    if (KeCancelTimer(&xpd->read_timer))
+		  continue;
+
 	    call_fun = (callback_t) irp->Tail.Overlay.DriverContext[0];
 	    irp->Tail.Overlay.DriverContext[0] = 0;
 	    (*call_fun) (xsp, irp);
@@ -232,6 +268,7 @@ static void read_cancel(DEVICE_OBJECT*dev, IRP*irp)
 {
       KIRQL irql;
       struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
+      struct channel_t*xpd = get_channel(irp);
 
       KeAcquireSpinLock(&xsp->pending_read_sync, &irql);
       RemoveEntryList(&irp->Tail.Overlay.ListEntry);
@@ -240,13 +277,44 @@ static void read_cancel(DEVICE_OBJECT*dev, IRP*irp)
 
       IoReleaseCancelSpinLock(irp->CancelIrql);
 
+      xpd->read_pending = 0;
       irp->IoStatus.Status = STATUS_CANCELLED;
+      irp->IoStatus.Information = 0;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+}
+
+void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2)
+{
+      KIRQL irql;
+      struct channel_t*xpd = (struct channel_t*)ctx;
+      struct instance_t*xsp = xpd->xsp;
+      IRP*irp = xpd->read_pending;
+
+      if (irp == 0)
+	    return;
+
+	/* mark this as no longer pending. */
+      xpd->read_pending = 0;
+
+	/* pull the IRP out of the read list, much like cancel. */
+      KeAcquireSpinLock(&xsp->pending_read_sync, &irql);
+      RemoveEntryList(&irp->Tail.Overlay.ListEntry);
+      IoSetCancelRoutine(irp, 0);
+      KeReleaseSpinLock(&xsp->pending_read_sync, irql);
+
+      if (irp->Cancel)
+	    return;
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = 0;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
 }
 
 /*
  * $Log$
+ * Revision 1.4  2001/09/06 18:28:43  steve
+ *  Read timeouts.
+ *
  * Revision 1.3  2001/09/05 01:19:58  steve
  *  make read robust to multiple blocked read attempts.
  *

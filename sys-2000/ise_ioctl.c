@@ -300,8 +300,9 @@ static NTSTATUS dev_ioctl_channel(DEVICE_OBJECT*dev, IRP*irp)
 
       arg = *(unsigned long*)irp->AssociatedIrp.SystemBuffer;
 
-      printk("ise%u: ioctl switch from channel %u to %u\n",
-	     xsp->id, xpd->channel, arg);
+      if (debug_flag & UCR_TRACE_CHAN)
+	    printk("ise%u: ioctl switch from channel %u to %u\n",
+		   xsp->id, xpd->channel, arg);
 
       if (arg >= ROOT_TABLE_CHANNELS) {
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
@@ -336,8 +337,9 @@ static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp);
 
 static NTSTATUS dev_ioctl_channel_2(struct instance_t*xsp, IRP*irp)
 {
-      printk("ise%u: ioctl switch flush complete, starting sync...\n",
-	     xsp->id);
+      if (debug_flag & UCR_TRACE_CHAN)
+	    printk("ise%u: ioctl switch flush complete, "
+		   "starting sync...\n", xsp->id);
 
       return sync_channel(xsp, irp, dev_ioctl_channel_3);
 }
@@ -361,8 +363,9 @@ static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
 	    return STATUS_NO_MEMORY;
       }
 
-      printk("ise%u: Switch from channel %u to %u\n", xsp->id,
-	     xpd->channel, arg);
+      if (debug_flag & UCR_TRACE_CHAN)
+	    printk("ise%u: Commencing switch from channel %u to %u\n",
+		   xsp->id, xpd->channel, arg);
 
       newroot->chan[arg].ptr   = newroot->chan[xpd->channel].ptr;
       newroot->chan[arg].magic = newroot->chan[xpd->channel].magic;
@@ -428,6 +431,16 @@ static NTSTATUS dev_ioctl_free_frame(DEVICE_OBJECT*dev, IRP*irp)
 
       arg = *(unsigned long*)irp->AssociatedIrp.SystemBuffer;
       fidx = (arg >> 28) & 0x0f;
+
+      if (xsp->frame_map[fidx].base) {
+	    printk("ise%u.%u: Attempt to release mapped frame %u.\n",
+		   xsp->id, xpd->channel, fidx);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
 
       ise_free_frame(xsp, fidx);
 
@@ -624,6 +637,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.5  2001/09/06 18:28:43  steve
+ *  Read timeouts.
+ *
  * Revision 1.4  2001/09/05 22:05:55  steve
  *  protect mappings from misused or forgotten unmaps.
  *

@@ -193,6 +193,12 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
       xpd->xsp = xsp;
       xpd->proc = IoGetCurrentProcess();
 
+	/* Initialize members related to read timeouts. */
+      xpd->read_timeout = UCRX_TIMEOUT_OFF;
+      KeInitializeTimer(&xpd->read_timer);
+      KeInitializeDpc(&xpd->read_timer_dpc, &read_timeout, xpd);
+      xpd->read_pending = 0;
+
       xpd->table = (struct channel_table*)
 	    xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
 					   sizeof(struct channel_table),
@@ -246,7 +252,8 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 	    xpd->prev->next = xpd;
       }
 
-      printk("ise%u: create channel\n", xsp->id);
+      if (debug_flag & UCR_TRACE_CHAN)
+	    printk("ise%u: create channel\n", xsp->id);
 
 
 	/* Make a new root table with this new channel, then start the
@@ -327,7 +334,8 @@ static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp)
 {
       struct channel_t*xpd = get_channel(irp);
 
-      printk("ise%u.%u: Close the channel\n", xsp->id, xpd->channel);
+      if (debug_flag & UCR_TRACE_CHAN)
+	    printk("ise%u.%u: Close the channel\n", xsp->id, xpd->channel);
 
 	/* No more communication with the target channel, so remove
 	   the channel_t structure from the channel list. */
@@ -714,6 +722,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.5  2001/09/06 18:28:43  steve
+ *  Read timeouts.
+ *
  * Revision 1.4  2001/09/05 22:05:55  steve
  *  protect mappings from misused or forgotten unmaps.
  *
