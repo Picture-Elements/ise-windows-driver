@@ -612,8 +612,10 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
 	    xsp->root = 0;
       }
 
-	/* Make sure the hardware will not interrupt the host. */
-      dev_init_hardware(xsp);
+	/* Make sure the hardware will not interrupt the host. Only do
+	   this if we actually cot device registers. */
+      if (xsp->bar0_size)
+	    dev_init_hardware(xsp);
 
 	/* Release the DmaOperations object. */
       if (xsp->dma) {
@@ -732,6 +734,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.9  2002/04/10 21:05:05  steve
+ *  Handling failure to get bars.
+ *
  * Revision 1.8  2001/10/01 22:48:20  steve
  *  Cancel timers in cancel routines.
  *
