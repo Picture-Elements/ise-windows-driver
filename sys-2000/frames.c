@@ -22,6 +22,7 @@
 unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 			     unsigned long frame_size)
 {
+      unsigned long flag_tmp;
       unsigned idx;
       unsigned long page_count;
       unsigned long table_size;
@@ -39,13 +40,14 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 	   pointers will be filled in as the pages are allocated. */
       table_size = sizeof(struct frame_table) + page_count * sizeof(__u32);
       xsp->frame_tab[fidx] = xsp->dma->DmaOperations->AllocateCommonBuffer(
-				    xsp->dma, table_size, &frame_bus, FALSE);
+				    xsp->dma, table_size, &frame_bus, TRUE);
       if (xsp->frame_tab[fidx] == 0) {
-	    printk("ise%u: Unable to allocate frame_tab[%u]\n",
-		   xsp->id, fidx);
+	    printk("ise%u: Unable to allocate frame_tab[%u] (%u bytes)\n",
+		   xsp->id, fidx, table_size);
 	    return 0;
       }
 
+      RtlFillMemory(xsp->frame_tab[fidx], table_size, 0);
       xsp->frame_tab[fidx]->magic = FRAME_TABLE_MAGIC;
       xsp->frame_tab[fidx]->self  = frame_bus.LowPart;
       xsp->frame_tab[fidx]->page_size = PAGE_SIZE;
@@ -79,14 +81,17 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 
 	/* Allocate the pages of the frame, one page at a time. Add
 	   each page to the frame_tab, frame_pag and frame_mdl arrays
-	   as I get them. */
+	   as I get them. Enable the cache, because on ix86 systems
+	   the memory is coherent even when PCI devices are involved.
+	   NOTE: XP will BSOD if it is not marked cacheable. */
+      flag_tmp = 0;
       for (idx = 0 ;  idx < page_count ;  idx += 1) {
 	    PHYSICAL_ADDRESS page_bus;
 	    void* page_vrt;
 	    MDL*mtmp;
 
 	    page_vrt = xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
-				       PAGE_SIZE, &page_bus, FALSE);
+				       PAGE_SIZE, &page_bus, TRUE);
 	    xsp->frame_tab[fidx]->page[idx] = page_bus.LowPart;
 	    xsp->frame_pag[fidx] [idx] = page_vrt;
 
@@ -107,6 +112,7 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 	    }
 
 	    MmBuildMdlForNonPagedPool(mtmp);
+	    flag_tmp |= mtmp->MdlFlags;
 
 	    MmGetMdlPfnArray(xsp->frame_mdl[fidx]) [idx] =
 		  MmGetMdlPfnArray(mtmp) [0];
@@ -114,8 +120,10 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 	    IoFreeMdl(mtmp);
       }
 
+      xsp->frame_mdl[fidx]->MdlFlags |= MDL_ALLOCATED_FIXED_SIZE;
       xsp->frame_mdl[fidx]->MdlFlags |= MDL_PAGES_LOCKED;
       xsp->frame_mdl[fidx]->MdlFlags |= MDL_SOURCE_IS_NONPAGED_POOL;
+
       return xsp->frame_tab[fidx]->page_size
 	    * xsp->frame_tab[fidx]->page_count;
 
@@ -143,12 +151,12 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 		  page_bus.LowPart = xsp->frame_tab[fidx]->page[idx];
 		  page_bus.HighPart = 0;
 		  xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-			       PAGE_SIZE, page_bus, page_vrt, FALSE);
+			       PAGE_SIZE, page_bus, page_vrt, TRUE);
 	    }
 
 	      /* Free the frame table */
 	    xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-			  table_size, frame_bus, xsp->frame_tab[fidx], FALSE);
+			  table_size, frame_bus, xsp->frame_tab[fidx], TRUE);
 	    xsp->frame_tab[fidx] = 0;
       }
 
@@ -197,7 +205,7 @@ void ise_free_frame(struct instance_t*xsp, unsigned fidx)
 		  page_bus.LowPart = xsp->frame_tab[fidx]->page[idx];
 		  page_bus.HighPart = 0;
 		  xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-				   PAGE_SIZE, page_bus, page_vrt, FALSE);
+				   PAGE_SIZE, page_bus, page_vrt, TRUE);
 	    }
 
 	    ExFreePool(xsp->frame_pag[fidx]);
@@ -209,13 +217,16 @@ void ise_free_frame(struct instance_t*xsp, unsigned fidx)
       frame_bus.HighPart = 0;
       frame_bus.LowPart = xsp->frame_tab[fidx]->self;
       xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-		      table_size, frame_bus, xsp->frame_tab[fidx], FALSE);
+		      table_size, frame_bus, xsp->frame_tab[fidx], TRUE);
       xsp->frame_tab[fidx] = 0;
 }
 
 
 /*
  * $Log$
+ * Revision 1.6  2002/06/21 00:51:33  steve
+ *  Only allocate cached buffers to share with ISE.
+ *
  * Revision 1.5  2001/10/08 23:25:31  steve
  *  Made frame_tab too big. Get the size right.
  *

@@ -668,12 +668,36 @@ static NTSTATUS dev_ioctl_mmap(DEVICE_OBJECT*dev, IRP*irp)
 	    return STATUS_UNSUCCESSFUL;
       }
 
+      if (KeGetCurrentIrql() > APC_LEVEL) {
+	    KIRQL irql = KeGetCurrentIrql();
+	    printk("ise%u: ioctl(MMAP) MmMapLockedPages at IRQL=%u\n",
+		   xsp->id, irql);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
 	/* Map the pages of the frame into user mode. Ignore the size
 	   that the user passes, and return the size chosen, along
 	   with the base address, to the caller. */
-      mapinfo->base = MmMapLockedPagesSpecifyCache(xsp->frame_mdl[fidx],
-			  UserMode, MmNonCached, 0, FALSE, NormalPagePriority);
-      mapinfo->size = xsp->frame_tab[fidx]->page_count * PAGE_SIZE;
+      __try {
+	    mapinfo->base = MmMapLockedPagesSpecifyCache(xsp->frame_mdl[fidx],
+			  UserMode, MmCached, 0, FALSE, NormalPagePriority);
+	    mapinfo->size = xsp->frame_tab[fidx]->page_count * PAGE_SIZE;
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+	    mapinfo->base = 0;
+	    mapinfo->size = 0;
+	    printk("ise%u: Exception from MmMapLockedPages\n", xsp->id);
+      }
+
+      if (mapinfo->base == 0) {
+	    printk("ise%u: ioctl(MMAP) MmMapLockedPages failed \n", xsp->id);
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_NO_MEMORY;
+      }
 
 	/* Save the mapping. */
       xsp->frame_map[fidx].proc = IoGetCurrentProcess();
@@ -810,6 +834,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.13  2002/06/21 00:51:33  steve
+ *  Only allocate cached buffers to share with ISE.
+ *
  * Revision 1.12  2002/06/14 16:09:29  steve
  *  spin locks around root table manipulations.
  *
