@@ -14,7 +14,7 @@
  */
 
 
-void dev_init_hardware(struct instance_t*xsp)
+static void ise_init_hardware(struct instance_t*xsp)
 {
       __u32 tmp;
 
@@ -41,7 +41,7 @@ void dev_init_hardware(struct instance_t*xsp)
       }
 }
 
-void dev_clear_hardware(struct instance_t*xsp)
+static void ise_clear_hardware(struct instance_t*xsp)
 {
       __u32 tmp;
 
@@ -61,7 +61,7 @@ void dev_clear_hardware(struct instance_t*xsp)
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18), 0);
 }
 
-void dev_set_bells(struct instance_t*xsp, unsigned long mask)
+static void ise_set_bells(struct instance_t*xsp, unsigned long mask)
 {
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x20),
 			   mask & 0x7fffffffUL);
@@ -73,7 +73,7 @@ void dev_set_bells(struct instance_t*xsp, unsigned long mask)
  * device. While we're at it, compare that readout value to triple-
  * check that all went properly.
  */
-void dev_set_root_table_base(struct instance_t*xsp, __u32 value)
+static void ise_set_root_table_base(struct instance_t*xsp, __u32 value)
 {
       __u32 tmp;
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10), value);
@@ -85,12 +85,12 @@ void dev_set_root_table_base(struct instance_t*xsp, __u32 value)
       }
 }
 
-void dev_set_root_table_resp(struct instance_t*xsp, __u32 value)
+static void ise_set_root_table_resp(struct instance_t*xsp, __u32 value)
 {
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18), value);
 }
 
-unsigned long dev_get_root_table_resp(struct instance_t*xsp)
+static unsigned long ise_get_root_table_resp(struct instance_t*xsp)
 {
       return READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18));
 }
@@ -98,13 +98,13 @@ unsigned long dev_get_root_table_resp(struct instance_t*xsp)
 /*
  * The status resp and value registers are the OMR1 and IMR1 regisers.
  */
-__u32 dev_get_status_resp(struct instance_t*xsp)
+static __u32 ise_get_status_resp(struct instance_t*xsp)
 {
 	/* return OMR1 */
       return READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x1c));
 }
 
-void dev_set_status_value(struct instance_t*xsp, __u32 value)
+static void ise_set_status_value(struct instance_t*xsp, __u32 value)
 {
 	/* IMR1 = value; */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x14), value);
@@ -116,7 +116,7 @@ void dev_set_status_value(struct instance_t*xsp, __u32 value)
  * then pretend no bells are set. This allows the IRQ to use the mask
  * as a synchronization trick, even when the hardware IRQ is shared.
  */
-unsigned long dev_get_bells(struct instance_t*xsp)
+static unsigned long ise_get_bells(struct instance_t*xsp)
 {
       unsigned long mask;
 
@@ -129,7 +129,7 @@ unsigned long dev_get_bells(struct instance_t*xsp)
       return mask & 0x0fffffff;
 }
 
-unsigned long dev_mask_irqs(struct instance_t*xsp)
+static unsigned long ise_mask_irqs(struct instance_t*xsp)
 {
       unsigned long mask =
 	    READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34));
@@ -139,14 +139,97 @@ unsigned long dev_mask_irqs(struct instance_t*xsp)
       return mask;
 }
 
-void dev_unmask_irqs(struct instance_t*xsp, unsigned long mask)
+static void ise_unmask_irqs(struct instance_t*xsp, unsigned long mask)
 {
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34), mask);
 }
 
+static void ise_diagnose0_dump(struct instance_t*xsp)
+{
+      unsigned long magic;
+      unsigned lineno, cnt, idx;
+      char msg[128];
+
+      magic = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x50));
+      if (magic != 0xab0440ba) {
+	    printk("isex%u: No abort magic number.\n", xsp->id);
+	    return;
+      }
+
+      lineno = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x54));
+      cnt = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x58));
+      if (cnt >= sizeof msg) {
+	    printk("isex%u: Invalid count: %u\n", xsp->id, cnt);
+	    return;
+      }
+
+      for (idx = 0 ;  idx < cnt ;  idx += 1) {
+	    msg[idx] =
+		 READ_REGISTER_UCHAR((unsigned char*)xsp->bar0 + 0x5c + idx);
+      }
+
+      msg[cnt] = 0;
+
+      printk("isex%u: target panic msg: %s\n", xsp->id, msg);
+      printk("isex%u: target panic code: %u (0x%x)\n", xsp->id,
+	     lineno, lineno);
+}
+
+static void ise_diagnose1_dump(struct instance_t*xsp)
+{
+      if (xsp->bar0_size > 0) {
+	    printk("ise%u: root_table = (base=%x resp=%x)\n", xsp->id,
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10)),
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)));
+
+	    printk("ise%u: OIMR=%x, OISR=%x, ODR=%x\n", xsp->id,
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34)),
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x30)),
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x2c)));
+
+	    printk("ise%u: IIMR=%x, IISR=%x, IDR=%x\n", xsp->id,
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x28)),
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x24)),
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x20)));
+
+	    printk("ise%u: OMR0=%x, OMR1=%x\n", xsp->id,
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)),
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x1c)));
+
+	    printk("ise%u: IMR0=%x, IMR1=%x\n", xsp->id,
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10)),
+		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x14)));
+
+      } else {
+	    printk("ise%u: <** Device Not Mapped **>\n", xsp->id);
+      }
+}
+
+const struct ise_ops_tab ise_operations = {
+      "ISE/SSE",
+      ise_init_hardware,
+      ise_clear_hardware,
+      ise_mask_irqs,
+      ise_unmask_irqs,
+      ise_set_root_table_base,
+      ise_set_root_table_resp,
+      ise_get_root_table_resp,
+      ise_get_status_resp,
+      ise_set_status_value,
+
+      ise_set_bells,
+      ise_get_bells,
+
+      ise_diagnose0_dump,
+      ise_diagnose1_dump
+};
+
 
 /*
  * $Log$
+ * Revision 1.1  2004/07/15 04:19:26  steve
+ *  Extend to support JSE boards.
+ *
  * Revision 1.4  2002/05/13 20:07:52  steve
  *  More diagnostic detail, and check registers.
  *

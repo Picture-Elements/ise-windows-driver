@@ -136,6 +136,8 @@ struct instance_t {
       DEVICE_OBJECT*next_dev;
 	/* This is the device object for the isex node. */
       DEVICE_OBJECT*fdx;
+        /* Device operations */
+      const struct ise_ops_tab*dev_ops;
 	/* This is the mapped bar for the device. */
       void*bar0;
       unsigned bar0_size;
@@ -258,29 +260,46 @@ struct channel_t {
       struct channel_t *next, *prev;
 };
 
-/*
- * Device frobbing functions.
- */
-extern void dev_init_hardware(struct instance_t*xsp);
-extern void dev_clear_hardware(struct instance_t*xsp);
+struct ise_ops_tab {
+      const char*full_name;
 
-extern void dev_set_root_table_base(struct instance_t*xsp, __u32 value);
-extern void dev_set_root_table_resp(struct instance_t*xsp, __u32 value);
+      void (*init_hardware)(struct instance_t*xsp);
+      void (*clear_hardware)(struct instance_t*xsp);
+      unsigned long (*mask_irqs)(struct instance_t*xsp);
+      void (*unmask_irqs)(struct instance_t*xsp, unsigned long mask);
+      void (*set_root_table_base)(struct instance_t*xsp, __u32 value);
+      void (*set_root_table_resp)(struct instance_t*xsp, __u32 value);
+      __u32 (*get_root_table_resp)(struct instance_t*xsp);
+      __u32 (*get_status_resp)(struct instance_t*xsp);
+      void (*set_status_value)(struct instance_t*xsp, __u32 value);
 
-extern unsigned long dev_get_root_table_resp(struct instance_t*xsp);
+      void (*set_bells)(struct instance_t*xsp, unsigned long mask);
+      unsigned long (*get_bells)(struct instance_t*xsp);
 
-extern __u32 dev_get_status_resp(struct instance_t*xsp);
-extern void  dev_set_status_value(struct instance_t*xsp, __u32 value);
+	/* Diagnose functions. */
+      void (*diagnose0_dump)(struct instance_t*xsp);
+      void (*diagnose1_dump)(struct instance_t*xsp);
+};
+
+extern const struct ise_ops_tab ise_operations;
+extern const struct ise_ops_tab jse_operations;
+
+# define dev_clear_hardware(xsp)   (xsp)->dev_ops->clear_hardware(xsp)
+# define dev_init_hardware(xsp)    (xsp)->dev_ops->init_hardware(xsp)
+# define dev_mask_irqs(xsp)        (xsp)->dev_ops->mask_irqs(xsp)
+# define dev_unmask_irqs(xsp,mask) (xsp)->dev_ops->unmask_irqs(xsp, mask)
+# define dev_set_root_table_base(xsp,val) (xsp)->dev_ops->set_root_table_base(xsp,val)
+# define dev_set_root_table_resp(xsp,val) (xsp)->dev_ops->set_root_table_resp(xsp,val)
+# define dev_get_root_table_resp(xsp)  (xsp)->dev_ops->get_root_table_resp(xsp)
+# define dev_get_status_resp(xsp)      (xsp)->dev_ops->get_status_resp(xsp)
+# define dev_set_status_value(xsp,val) (xsp)->dev_ops->set_status_value(xsp,val)
+
+# define dev_get_bells(xsp)      (xsp)->dev_ops->get_bells(xsp)
+# define dev_set_bells(xsp,mask) (xsp)->dev_ops->set_bells(xsp,mask)
 
 # define ROOT_TABLE_BELLMASK 0x01
 # define STATUS_BELLMASK     0x02
 # define CHANGE_BELLMASK     0x04
-
-extern unsigned long dev_get_bells(struct instance_t*xsp);
-extern void dev_set_bells(struct instance_t*xsp, unsigned long mask);
-
-extern unsigned long dev_mask_irqs(struct instance_t*xsp);
-extern void dev_unmask_irqs(struct instance_t*xsp, unsigned long mask);
 
 
 /*
@@ -300,6 +319,9 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.12  2004/07/15 04:19:26  steve
+ *  Extend to support JSE boards.
+ *
  * Revision 1.11  2002/06/14 16:09:29  steve
  *  spin locks around root table manipulations.
  *

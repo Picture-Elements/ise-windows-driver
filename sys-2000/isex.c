@@ -64,37 +64,6 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
       return STATUS_SUCCESS;
 }
 
-static void isex_diagnose0(struct instance_t*xsp, IRP*irp)
-{
-      unsigned long magic;
-      unsigned lineno, cnt, idx;
-      char msg[128];
-
-      magic = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x50));
-      if (magic != 0xab0440ba) {
-	    printk("isex%u: No abort magic number.\n", xsp->id);
-	    return;
-      }
-
-      lineno = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x54));
-      cnt = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x58));
-      if (cnt >= sizeof msg) {
-	    printk("isex%u: Invalid count: %u\n", xsp->id, cnt);
-	    return;
-      }
-
-      for (idx = 0 ;  idx < cnt ;  idx += 1) {
-	    msg[idx] =
-		 READ_REGISTER_UCHAR((unsigned char*)xsp->bar0 + 0x5c + idx);
-      }
-
-      msg[cnt] = 0;
-
-      printk("isex%u: target panic msg: %s\n", xsp->id, msg);
-      printk("isex%u: target panic code: %u (0x%x)\n", xsp->id,
-	     lineno, lineno);
-}
-
 static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 {
       unsigned idx;
@@ -119,7 +88,7 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 	    if (xsp->bar0_size == 0)
 		  printk("ise%u: <** Device Not Mapped **>\n", xsp->id);
 	    else
-		  isex_diagnose0(xsp, irp);
+		  xsp->dev_ops->diagnose0_dump(xsp);
 	    break;
 
 	  case 1:
@@ -135,32 +104,7 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 		   xsp->pending_read_count.complete,
 		   xsp->pending_read_count.cancelled);
 
-	    if (xsp->bar0_size > 0) {
-		  printk("ise%u: root_table = (base=%x resp=%x)\n", xsp->id,
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)));
-
-		  printk("ise%u: OIMR=%x, OISR=%x, ODR=%x\n", xsp->id,
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x30)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x2c)));
-
-		  printk("ise%u: IIMR=%x, IISR=%x, IDR=%x\n", xsp->id,
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x28)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x24)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x20)));
-
-		  printk("ise%u: OMR0=%x, OMR1=%x\n", xsp->id,
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x1c)));
-
-		  printk("ise%u: IMR0=%x, IMR1=%x\n", xsp->id,
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10)),
-		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x14)));
-
-	    } else {
-		  printk("ise%u: <** Device Not Mapped **>\n", xsp->id);
-	    }
+	    xsp->dev_ops->diagnose1_dump(xsp);
 
 	    printk("ise%u: ROOT TABLE at %p(%x) "
 		   "MAGIC=[%x:%x] standby_leak=%u\n", xsp->id, xsp->root,
@@ -448,6 +392,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.11  2004/07/15 04:19:26  steve
+ *  Extend to support JSE boards.
+ *
  * Revision 1.10  2002/05/13 20:07:52  steve
  *  More diagnostic detail, and check registers.
  *

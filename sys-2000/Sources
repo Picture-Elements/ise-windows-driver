@@ -4,6 +4,6 @@ TARGETPATH=.
 TARGETTYPE=DRIVER
 INCLUDES=../sys-common
 
-SOURCES=entry.c console.c dev.c frames.c ise.c ise_ioctl.c ise_read.c ise_write.c isex.c isex_run.c vers.rc
+SOURCES=entry.c console.c dev_ise.c dev_jse.c frames.c ise.c ise_ioctl.c ise_read.c ise_write.c isex.c isex_run.c vers.rc
 
 NTTARGETFILE0=isem.h

@@ -520,6 +520,49 @@ static BOOLEAN xxisr(PKINTERRUPT irq, void*dev_id)
 }
 
 /*
+ * The start function needs to know detailed device ids so that we can
+ * select device access functions. This function gets the entire PCI
+ * config space, which can be used by the caller as it sees fit.
+ */
+static NTSTATUS read_pci_config(DEVICE_OBJECT*fdo, PCI_COMMON_CONFIG*pci)
+{
+      KEVENT event;
+      NTSTATUS status;
+      IO_STATUS_BLOCK iostatus;
+      IRP*irp;
+      IO_STACK_LOCATION*irp_stack;
+      DEVICE_OBJECT*pdo;
+
+      KeInitializeEvent(&event, NotificationEvent, FALSE);
+      pdo = IoGetAttachedDeviceReference(fdo);
+
+      irp = IoBuildSynchronousFsdRequest(IRP_MJ_PNP, pdo, NULL, 0,
+					 NULL, &event, &iostatus);
+      if (irp == 0) {
+	    status = STATUS_INSUFFICIENT_RESOURCES;
+	    goto out;
+      }
+
+      irp_stack = IoGetNextIrpStackLocation(irp);
+      irp_stack->MinorFunction = IRP_MN_READ_CONFIG;
+      irp_stack->Parameters.ReadWriteConfig.WhichSpace = PCI_WHICHSPACE_CONFIG;
+      irp_stack->Parameters.ReadWriteConfig.Buffer = pci;
+      irp_stack->Parameters.ReadWriteConfig.Offset = 0;
+      irp_stack->Parameters.ReadWriteConfig.Length = sizeof(*pci);
+
+      irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
+      status = IoCallDriver(pdo, irp);
+      if (status == STATUS_PENDING) {
+	    KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
+	    status = iostatus.Status;
+      }
+
+ out:
+      ObDereferenceObject(pdo);
+      return status;
+}
+
+/*
  * This function is called by a PNP_MN_START_DEVICE irp to handle the
  * allocation of resources from the kernel. I get all my I/O memory
  * and IRQ assignments this way. This is separate from the create_ise
@@ -531,6 +574,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       unsigned rdx;
       IO_STACK_LOCATION*iop;
       CM_RESOURCE_LIST*res, *raw;
+      PCI_COMMON_CONFIG pci;
       struct instance_t*xsp = (struct instance_t*)fdo->DeviceExtension;
 
       printk("ise%u: pnp_start_ise\n", xsp->id);
@@ -541,6 +585,28 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 
       if (res == 0) {
 	    printk("ise%u: no resources?!\n", xsp->id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      status = read_pci_config(fdo, &pci);
+      if (!NT_SUCCESS(status)) {
+	    printk("ise%u: No PCI config?!\n", xsp->id);
+      }
+
+      if ((pci.VendorID==0x12c5) && (pci.DeviceID==0x007f)) {
+	    xsp->dev_ops = &ise_operations;
+	    printk("ise%u: Detected %s board\n",
+		   xsp->id, xsp->dev_ops->full_name);
+
+      } else if ((pci.VendorID=0x8086) && (pci.DeviceID==0xb555)) {
+	    xsp->dev_ops = &jse_operations;
+	    printk("ise%u: Detected %s board\n",
+		   xsp->id, xsp->dev_ops->full_name);
+
+      } else {
+	    printk("ise%u: Unknown device type?!\n", xsp->id);
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
 	    return STATUS_UNSUCCESSFUL;
@@ -839,6 +905,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.14  2004/07/15 04:19:26  steve
+ *  Extend to support JSE boards.
+ *
  * Revision 1.13  2002/06/14 16:09:29  steve
  *  spin locks around root table manipulations.
  *

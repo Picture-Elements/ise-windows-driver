@@ -2,7 +2,7 @@
 ;
 ; Installation file (.inf) for the ISE device.
 ;
-; (c) Copyright 2001-2002 Picture Elements, Inc. 
+; (c) Copyright 2001-2004 Picture Elements, Inc. 
 ;
 
 [Version]
@@ -13,7 +13,7 @@ Class=Image
 ClassGuid={6bdd1fc6-810f-11d0-bec7-08002be2092f}
 ;CatalogFile=ise.cat
 
-DriverVer=3/31/2003,2.3.2003.331
+DriverVer=7/14/2004,2.4.2004.714
 
 ;
 ; Driver information
@@ -32,6 +32,7 @@ DriverVer=3/31/2003,2.3.2003.331
 ; one of these records. The record in turn references an
 ; install section.
 %picturel.ise% = ise.Install, PCI\VEN_12C5&DEV_007f
+%picturel.jse% = jse.Install, PCI\VEN_8086&DEV_b555&SUBSYS_008A12C5
 
 
 [DestinationDirs]
@@ -64,13 +65,8 @@ ise.sys=1,i386
 [ise.Install.ntx86]
 CopyFiles=ise.Files.Driver.NTx86
 
-[ise.Files.Driver.ntx86]
-ise.sys,,,2
-
-
 [ise.Install.NTx86.Services]
 AddService = ise, 0x00000002 , ise.Service, ise.EventLog
-
 
 [ise.Service]
 DisplayName    = %picturel.ise%
@@ -80,6 +76,25 @@ ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
 ServiceBinary  = %10%\system32\drivers\ise.sys
 
 
+[jse.Install.ntx86]
+CopyFiles=ise.Files.Driver.NTx86
+
+[jse.Install.NTx86.Services]
+AddService = ise, 0x00000002 , jse.Service, ise.EventLog
+
+[jse.Service]
+DisplayName    = %picturel.jse%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
+ServiceBinary  = %10%\system32\drivers\ise.sys
+
+
+; In all cases, this is the driver file.
+[ise.Files.Driver.ntx86]
+ise.sys,,,2
+
+; Same EventLog setup for ISE and JSE boards.
 [ise.EventLog]
 AddReg = ise.EventLog.AddReg
 
@@ -107,6 +122,7 @@ HKR,,TypesSupported,0x00010001,7
 ; Localizable Strings
 ;
 
-picturel.ise = "Picture Elements, Imaging Subsystem Engine"
+picturel.ise = "Picture Elements, Imaging Subsystem Engine (ISE/SSE)"
+picturel.jse = "Picture Elements, Imaging Subsystem Engine (JSE)"
 picturel = "Picture Elements, Inc."
 ISE_Driver_Collection = "ISE Driver Collection"
