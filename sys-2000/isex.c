@@ -199,6 +199,25 @@ static NTSTATUS isex_timeout(DEVICE_OBJECT*dev, IRP*irp)
       return irp->IoStatus.Status;
 }
 
+static NTSTATUS isex_get_trace(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+
+      if (stp->Parameters.DeviceIoControl.OutputBufferLength
+	            != sizeof debug_flag) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      *(unsigned long*)irp->AssociatedIrp.SystemBuffer = debug_flag;
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return irp->IoStatus.Status;
+}
+
 static NTSTATUS isex_set_trace(DEVICE_OBJECT*dev, IRP*irp)
 {
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
@@ -236,6 +255,9 @@ NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 	  case UCRX_TIMEOUT:
 	    return isex_timeout(dev, irp);
 
+	  case UCRX_GET_TRACE:
+	    return isex_get_trace(dev, irp);
+
 	  case UCRX_SET_TRACE:
 	    return isex_set_trace(dev, irp);
 
@@ -245,6 +267,7 @@ NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
       }
 
       irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+      irp->IoStatus.Information = 0;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
       return irp->IoStatus.Status;
 }
@@ -348,6 +371,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.5  2001/09/06 21:42:50  steve
+ *  Add get_trace.
+ *
  * Revision 1.4  2001/09/06 18:28:43  steve
  *  Read timeouts.
  *
