@@ -151,15 +151,26 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 		  } while (xsp->channels != xpd);
 	    }
 
-	    if (xsp->root)
+	    if (xsp->root) {
+		  for (idx = 0 ;  idx < ROOT_TABLE_CHANNELS ;  idx += 1) {
+			if (xsp->root->chan[idx].ptr == 0)
+			      continue;
+
+			printk("ise%u chan %u: ptr=0x%x, magic=%x\n",
+			       xsp->id, idx,
+			       xsp->root->chan[idx].ptr,
+			       xsp->root->chan[idx].magic);
+		  }
+
 		  for (idx = 0 ;  idx < 16 ;  idx += 1) {
 			printk("ise%u frame %u: ptr=0x%x, magic=0x%x\n",
 			       xsp->id, idx,
 			       xsp->root->frame_table[idx].ptr,
 			       xsp->root->frame_table[idx].magic);
 		  }
-	    else
+	    } else {
 		  printk("ise%u: No root table, so no frames.\n", xsp->id);
+	    }
 
 	    break;
 
@@ -418,6 +429,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.13  2005/03/02 15:25:57  steve
+ *  Dump channels in diagnose1.
+ *
  * Revision 1.12  2004/08/02 23:45:49  steve
  *  Add UCRX_BOARD_TYPE control
  *
