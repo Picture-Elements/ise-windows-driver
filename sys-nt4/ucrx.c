@@ -125,6 +125,7 @@ static int ucrx_reset_board(struct Instance*xsp)
  * application program is loaded and ready to go. If the BIST bit is
  * set, then start the BIST to cause the application to go.
  */
+#if 0
 static int ucrx_run_program(struct Instance*xsp)
 {
       unsigned state = 0;
@@ -151,6 +152,49 @@ static int ucrx_run_program(struct Instance*xsp)
 
       return 0;
 }
+#else
+static int ucrx_run_program(struct Instance*xsp)
+{
+      __u32 state = 0;
+      int rc;
+
+	/* Cannot reset the board if there are any open channels. */
+      if (xsp->channels != 0)
+	    return -EBUSY;
+
+      state = dev_get_status_value(xsp->dev);
+      if (state & 0x0001) {
+	    if (0 == (state & 0x0002))
+		  return -EAGAIN;
+
+	    if (debug_flag&UCR_TRACE_UCRX)
+		  printk("isex%u: Run ISE with status message.\n",
+			 xsp->number);
+
+	    dev_set_status_value(xsp->dev, 0x0002);
+	    dev_set_bells(xsp->dev, 0x0002);
+
+	    rc = 0;
+      } else {
+	    pcibios_read_config_dword(xsp->bus, xsp->dfn, 0x0c, &state);
+
+	    if (debug_flag&UCR_TRACE_UCRX)
+		  printk("ucrx: Run ISE at bus=%u, dfn=%u state=%x\n",
+			 xsp->bus, xsp->dfn, state);
+
+	    if (! (state & 0x80000000))
+		  return -EAGAIN;
+
+	    printk("isex%u: warning: using obsolete bist method "
+		   "to run ise%u\n", xsp->number, xsp->number);
+
+	    rc = pcibios_write_config_dword(xsp->bus, xsp->dfn, 0x0c, state|0x40000000);
+
+      }
+      return 0;
+}
+#endif
+
 
 static int ucrx_diagnose(struct Instance*xsp, unsigned long arg)
 {
@@ -306,6 +350,9 @@ int ucrx_ioctl(struct Instance*xsp, unsigned int cmd, unsigned long arg)
 
 /*
  * $Log$
+ * Revision 1.3  2002/07/02 21:55:04  steve
+ *  Detect and use status based SSE startup.
+ *
  * Revision 1.2  2002/06/28 22:13:23  steve
  *  Reset that preserves bar0 region size.
  *

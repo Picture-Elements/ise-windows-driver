@@ -102,7 +102,7 @@ static __inline__ void dev_set_root_table_resp(unsigned long dev, __u32 value)
 {     writel(0, dev+OUTBOUND0);
 }
 
-static __inline__ void dev_set_event_value(unsigned long dev, __u32 value)
+static __inline__ void dev_set_status_value(unsigned long dev, __u32 value)
 {
       writel(value, dev+INBOUND1);
 }
@@ -112,7 +112,7 @@ static __inline__ __u32 dev_get_root_table_ack(unsigned long dev)
       return readl(dev+OUTBOUND0);
 }
 
-static __inline__ __u32 dev_get_event_ack(unsigned long dev)
+static __inline__ __u32 dev_get_status_value(unsigned long dev)
 {
       return readl(dev+OUTBOUND1);
 }
@@ -185,6 +185,9 @@ static __inline__ void dev_unmask_irqs(unsigned long dev, unsigned long mask)
 #endif
 /*
  * $Log$
+ * Revision 1.3  2002/07/02 21:55:04  steve
+ *  Detect and use status based SSE startup.
+ *
  * Revision 1.2  2002/06/28 23:13:32  steve
  *  Slightly more thorough init.
  *
