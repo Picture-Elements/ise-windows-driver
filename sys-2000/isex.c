@@ -61,9 +61,40 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
       return irp->IoStatus.Status;
 }
 
+static void isex_diagnose0(struct instance_t*xsp, IRP*irp)
+{
+      unsigned long magic;
+      unsigned lineno, cnt, idx;
+      char msg[128];
+
+      magic = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x50));
+      if (magic != 0xab0440ba) {
+	    printk("isex%u: No abort magic number.\n", xsp->id);
+	    return;
+      }
+
+      lineno = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x54));
+      cnt = READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x58));
+      if (cnt >= sizeof msg) {
+	    printk("isex%u: Invalid count: %u\n", xsp->id, cnt);
+	    return;
+      }
+
+      for (idx = 0 ;  idx < cnt ;  idx += 1) {
+	    msg[idx] =
+		 READ_REGISTER_UCHAR((unsigned char*)xsp->bar0 + 0x5c + idx);
+      }
+
+      msg[cnt] = 0;
+
+      printk("isex%u: target panic msg: %s\n", xsp->id, msg);
+      printk("isex%u: target panic code: %u (0x%x)\n", xsp->id,
+	     lineno, lineno);
+}
 
 static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 {
+      unsigned idx;
       struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
       unsigned long arg;
@@ -80,6 +111,10 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
       printk("isex%u: Diagnose %u\n", xsp->id, arg);
 
       switch (arg) {
+
+	  case 0:
+	    isex_diagnose0(xsp, irp);
+	    break;
 
 	  case 1:
 	    printk("ise%u: %u root table pending\n", xsp->id,
@@ -108,7 +143,6 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 	    if (xsp->channels) {
 		  struct channel_t*xpd = xsp->channels;
 		  do {
-			unsigned idx;
 			printk("ise%u.%u: CHANNEL TABLE "
 			       "MAGIC=[%x:%x]\n", xsp->id,
 			       xpd->channel, xpd->table->magic,
@@ -139,6 +173,13 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 
 			xpd = xpd->next;
 		  } while (xsp->channels != xpd);
+	    }
+
+	    for (idx = 0 ;  idx < 16 ;  idx += 1) {
+		  printk("ise%u frame %u: ptr=0x%x, magic=0x%x\n",
+			 xsp->id, idx,
+			 xsp->root->frame_table[idx].ptr,
+			 xsp->root->frame_table[idx].magic);
 	    }
 	    break;
 
@@ -371,6 +412,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.6  2001/09/07 02:59:50  steve
+ *  More diagnose details
+ *
  * Revision 1.5  2001/09/06 21:42:50  steve
  *  Add get_trace.
  *
