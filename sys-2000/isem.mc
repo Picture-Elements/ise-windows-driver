@@ -20,3 +20,42 @@ Language=English
 No devices found.
 .
 
+MessageId=2
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_FRAME_UNMAP_FAILED
+Language=English
+Tried to unmap frame that does not belong to me.
+.
+
+MessageId=3
+Facility=ISE
+Severity=Informational
+SymbolicName=ISE_FRAME_UNMAP_ON_CLOSE
+Language=English
+Implicitly unmapped frame on close.
+.
+
+MessageId=4
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_FRAME_DANGLE_ON_CLOSE
+Language=English
+Left frame dangling on close
+.
+
+MessageId=5
+Facility=ISE
+Severity=Informational
+SymbolicName=ISE_DETECTED_ISE
+Language=English
+Detected ISE/SSE board
+.
+
+MessageId=6
+Facility=ISE
+Severity=Informational
+SymbolicName=ISE_DETECTED_JSE
+Language=English
+Detected JSE board
+.

@@ -6,6 +6,7 @@
  */
 
 # include  "ise_sys.h"
+# include  "isem.h"
 
 /*
  * Output to the ISE board is managed through a ring of CHANNEL_OBUFS
@@ -764,6 +765,21 @@ static NTSTATUS dev_ioctl_munmap(DEVICE_OBJECT*dev, IRP*irp)
 	    printk("ise%u: unmap frame %u, that doesn't belong to me\n",
 		   xsp->id, fidx);
 
+	    { IO_ERROR_LOG_PACKET*event;
+	      unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+	      psize += 2*sizeof(ULONG);
+	      event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
+	      event->ErrorCode = ISE_FRAME_UNMAP_FAILED;
+	      event->UniqueErrorValue = 0;
+	      event->FinalStatus = STATUS_NO_MEMORY;
+	      event->MajorFunctionCode = IRP_MJ_DEVICE_CONTROL;
+	      event->IoControlCode = UCR_MUNMAP_FRAME;
+	      event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
+	      event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
+	      event->DumpData[2] = fidx;
+	      IoWriteErrorLogEntry(event);
+	    }
+
 	    irp->IoStatus.Status = STATUS_NO_MEMORY;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -834,6 +850,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.14  2004/10/25 19:04:49  steve
+ *  Snapshot 20041005: Some more error logging.
+ *
  * Revision 1.13  2002/06/21 00:51:33  steve
  *  Only allocate cached buffers to share with ISE.
  *

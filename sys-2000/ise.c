@@ -6,6 +6,7 @@
  */
 
 # include  "ise_sys.h"
+# include  "isem.h"
 
 static const wchar_t devname[] = L"\\Device\\ise";
 static const wchar_t dosname[] = L"\\DosDevices\\ISE";
@@ -420,11 +421,41 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 		    printk("ise%u.%u: unmap frame %u on final close.\n",
 			   xsp->id, xpd->channel, fidx);
 
+		    { IO_ERROR_LOG_PACKET*event;
+		      unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+		      psize += 2*sizeof(ULONG);
+		      event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
+		      event->ErrorCode = ISE_FRAME_UNMAP_ON_CLOSE;
+		      event->UniqueErrorValue = 0;
+		      event->FinalStatus = STATUS_NO_MEMORY;
+		      event->MajorFunctionCode = IRP_MJ_CLOSE;
+		      event->IoControlCode = 0;
+		      event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
+		      event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
+		      event->DumpData[2] = fidx;
+		      IoWriteErrorLogEntry(event);
+		    }
+
 		    MmUnmapLockedPages(xsp->frame_map[fidx].base,
 				       xsp->frame_mdl[fidx]);
 
 		    xsp->frame_map[fidx].proc = 0;
 		    xsp->frame_map[fidx].base = 0;
+
+	      } else if (xsp->frame_map[fidx].base) {
+		    IO_ERROR_LOG_PACKET*event;
+		    unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+		    psize += 2*sizeof(ULONG);
+		    event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
+		    event->ErrorCode = ISE_FRAME_DANGLE_ON_CLOSE;
+		    event->UniqueErrorValue = 0;
+		    event->FinalStatus = STATUS_NO_MEMORY;
+		    event->MajorFunctionCode = IRP_MJ_CLOSE;
+		    event->IoControlCode = 0;
+		    event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
+		    event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
+		    event->DumpData[2] = fidx;
+		    IoWriteErrorLogEntry(event);
 	      }
 	}
       }
@@ -600,10 +631,34 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	    printk("ise%u: Detected %s board\n",
 		   xsp->id, xsp->dev_ops->full_name);
 
+	    { IO_ERROR_LOG_PACKET*event;
+	      unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+	      event = IoAllocateErrorLogEntry(fdo, (UCHAR)psize);
+	      event->ErrorCode = ISE_DETECTED_ISE;
+	      event->UniqueErrorValue = 0;
+	      event->FinalStatus = STATUS_SUCCESS;
+	      event->MajorFunctionCode = 0;
+	      event->IoControlCode = 0;
+	      event->DumpData[0] = 0;
+	      IoWriteErrorLogEntry(event);
+	    }
+
       } else if ((pci.VendorID=0x8086) && (pci.DeviceID==0xb555)) {
 	    xsp->dev_ops = &jse_operations;
 	    printk("ise%u: Detected %s board\n",
 		   xsp->id, xsp->dev_ops->full_name);
+
+	    { IO_ERROR_LOG_PACKET*event;
+	      unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+	      event = IoAllocateErrorLogEntry(fdo, (UCHAR)psize);
+	      event->ErrorCode = ISE_DETECTED_JSE;
+	      event->UniqueErrorValue = 0;
+	      event->FinalStatus = STATUS_SUCCESS;
+	      event->MajorFunctionCode = 0;
+	      event->IoControlCode = 0;
+	      event->DumpData[0] = 0;
+	      IoWriteErrorLogEntry(event);
+	    }
 
       } else {
 	    printk("ise%u: Unknown device type?!\n", xsp->id);
@@ -905,6 +960,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.15  2004/10/25 19:04:49  steve
+ *  Snapshot 20041005: Some more error logging.
+ *
  * Revision 1.14  2004/07/15 04:19:26  steve
  *  Extend to support JSE boards.
  *
