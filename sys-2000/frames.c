@@ -40,6 +40,9 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
       table_size = sizeof(struct frame_table) + page_count * sizeof(__u32);
       xsp->frame_tab[fidx] = xsp->dma->DmaOperations->AllocateCommonBuffer(
 				    xsp->dma, frame_size, &frame_bus, FALSE);
+      if (xsp->frame_tab[fidx] == 0) {
+	    return 0;
+      }
 
       xsp->frame_tab[fidx]->magic = FRAME_TABLE_MAGIC;
       xsp->frame_tab[fidx]->self  = frame_bus.LowPart;
@@ -48,15 +51,29 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 
 	/* Allocate an array of void* to hold the virtual addresses of
 	   the frame buffers. The physical addresses will go into the
-	   frame table. */
+	   frame table. Zero fill this table so that non-allocation of
+	   pages is certain to be detected. */
       xsp->frame_pag[fidx] = (void**)ExAllocatePool(NonPagedPool,
 						    page_count*sizeof(void*));
+      if (xsp->frame_pag[fidx] == 0) {
+	    printk("ise%u: Unable to allocate frame_pag[%u]\n",
+		   xsp->id, fidx);
+	    goto no_mem;
+      }
+
+      RtlFillMemory(xsp->frame_pag[fidx], page_count*sizeof(void*), 0);
 
 
 	/* Allocate an MDL that will hold the entire frame. I will be
 	   building this up later, as I allocate the pages
 	   themselves. */
       xsp->frame_mdl[fidx] = IoAllocateMdl(0, frame_size, FALSE, FALSE, 0);
+      if (xsp->frame_mdl[fidx] == 0) {
+	    printk("ise%u: Unable to allocate frame_mdl[%u]\n",
+		   xsp->id, fidx);
+	    goto no_mem;
+      }
+
 
 	/* Allocate the pages of the frame, one page at a time. Add
 	   each page to the frame_tab, frame_pag and frame_mdl arrays
@@ -81,6 +98,12 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 		 PFN_NUMBER into the make mdl and release the
 		 temporary mdl. */
 	    mtmp = IoAllocateMdl(page_vrt, PAGE_SIZE, FALSE, FALSE, 0);
+	    if (mtmp == 0) {
+		  printk("ise%u: Unable to allocate temporary mdl?\n",
+			 xsp->id);
+		  goto no_mem;
+	    }
+
 	    MmBuildMdlForNonPagedPool(mtmp);
 
 	    MmGetMdlPfnArray(xsp->frame_mdl[fidx]) [idx] =
@@ -158,18 +181,25 @@ void ise_free_frame(struct instance_t*xsp, unsigned fidx)
       IoFreeMdl(xsp->frame_mdl[fidx]);
       xsp->frame_mdl[fidx] = 0;
 
-      for (idx = 0 ;  idx < page_count ;  idx += 1) {
-	    PHYSICAL_ADDRESS page_bus;
-	    void* page_vrt;
+	/* Free the individual pages of the frame, then free the
+	   frame_pag pointer to all those pages. */
+      if (xsp->frame_pag[fidx]) {
+	    for (idx = 0 ;  idx < page_count ;  idx += 1) {
+		  PHYSICAL_ADDRESS page_bus;
+		  void* page_vrt;
 
-	    page_vrt = xsp->frame_pag[fidx] [idx];
-	    if (page_vrt == 0)
-		  break;
+		  page_vrt = xsp->frame_pag[fidx] [idx];
+		  if (page_vrt == 0)
+			break;
 
-	    page_bus.LowPart = xsp->frame_tab[fidx]->page[idx];
-	    page_bus.HighPart = 0;
-	    xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
+		  page_bus.LowPart = xsp->frame_tab[fidx]->page[idx];
+		  page_bus.HighPart = 0;
+		  xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
 				   PAGE_SIZE, page_bus, page_vrt, FALSE);
+	    }
+
+	    ExFreePool(xsp->frame_pag[fidx]);
+	    xsp->frame_pag[fidx] = 0;
       }
 
 	/* Free the frame table */
@@ -184,6 +214,9 @@ void ise_free_frame(struct instance_t*xsp, unsigned fidx)
 
 /*
  * $Log$
+ * Revision 1.4  2001/10/04 20:51:44  steve
+ *  Handle low memory when allocating frames.
+ *
  * Revision 1.3  2001/09/05 22:05:55  steve
  *  protect mappings from misused or forgotten unmaps.
  *

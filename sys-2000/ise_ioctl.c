@@ -490,6 +490,15 @@ static NTSTATUS dev_ioctl_make_frame(DEVICE_OBJECT*dev, IRP*irp)
       fsiz = arg & 0x0fffffffUL;
 
       fsiz = ise_make_frame(xsp, fidx, fsiz);
+      if (fsiz == 0) {
+	    printk("ise%u.%u: UCR_MAKE_FRAME: failed to make frame\n",
+		   xsp->id, xpd->channel);
+
+	    irp->IoStatus.Status = STATUS_NO_MEMORY;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_NO_MEMORY;
+      }
 
       arg = fsiz;
       *(unsigned long*)irp->AssociatedIrp.SystemBuffer = arg;
@@ -774,6 +783,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.11  2001/10/04 20:51:44  steve
+ *  Handle low memory when allocating frames.
+ *
  * Revision 1.10  2001/10/03 17:43:38  steve
  *  More mutex areas around flush_channel.
  *
