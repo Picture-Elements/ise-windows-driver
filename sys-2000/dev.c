@@ -24,14 +24,14 @@ void dev_init_hardware(struct instance_t*xsp)
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x14), 0);
 	/* OUTBOUNT0 = 0 */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18), 0);
-	/* OIMR = 00xfb */
+	/* OIMR = 0xfb */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34), 0xfb);
 }
 
 void dev_clear_hardware(struct instance_t*xsp)
 {
-	/* OIMR = 0x00 */
-      WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34), 0x00);
+	/* OIMR = 0xfb (Enable only doorbells) */
+      WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34), 0xfb);
 	/* INBOUND0 = 0 */
       WRITE_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10), 0);
 	/* INBOUND1 = 0 */
@@ -113,6 +113,9 @@ void dev_unmask_irqs(struct instance_t*xsp, unsigned long mask)
 
 /*
  * $Log$
+ * Revision 1.3  2001/10/25 23:46:41  steve
+ *  Mask all but doorbell interrupts.
+ *
  * Revision 1.2  2001/08/03 17:39:41  steve
  *  Use status method to run programs.
  *
