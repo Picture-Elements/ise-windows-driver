@@ -129,6 +129,7 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
       }
       KeReleaseSpinLockFromDpcLevel(&xsp->pending_write_sync);
 
+      KeAcquireSpinLockAtDpcLevel(&xsp->mutex);
 
 	/* Try the listed items and schedule all the ones that have
 	   been released by available space in the write ring for the
@@ -153,7 +154,9 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 		  irp->Tail.Overlay.DriverContext[2] = 0;
 		  irp->Tail.Overlay.DriverContext[3] = 0;
 
+		  KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 		  (*call_fun) (xsp, irp);
+		  KeAcquireSpinLockAtDpcLevel(&xsp->mutex);
 
 	    } else if (irp->Cancel) {
 		    /* If the IRP was cancelled, then call the cancel
@@ -163,7 +166,10 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 		  irp->Tail.Overlay.DriverContext[0] = 0;
 		  irp->Tail.Overlay.DriverContext[2] = 0;
 		  irp->Tail.Overlay.DriverContext[3] = 0;
+
+		  KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 		  (*call_fun)(xsp, irp);
+		  KeAcquireSpinLockAtDpcLevel(&xsp->mutex);
 
 	    } else {
 
@@ -171,6 +177,8 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 					      &xsp->pending_write_sync);
 	    }
       }
+
+      KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 }
 
 /*
@@ -231,6 +239,8 @@ static NTSTATUS flush_channel_2(struct instance_t*xsp, IRP*irp)
 	/* Clear the cancel routine set by wait_for_write_ring. */
       IoSetCancelRoutine(irp, 0);
 
+      KeAcquireSpinLockAtDpcLevel(&xsp->mutex);
+
 	/* Set the count for the buffer that I am working on. */
       xpd->table->out[xpd->table->next_out_idx].count = xpd->out_off;
 
@@ -248,6 +258,8 @@ static NTSTATUS flush_channel_2(struct instance_t*xsp, IRP*irp)
 
       callback = (callback_t)irp->Tail.Overlay.DriverContext[1];
       irp->Tail.Overlay.DriverContext[1] = 0;
+
+      KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 
       return (*callback)(xsp, irp);
 }
@@ -762,6 +774,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.10  2001/10/03 17:43:38  steve
+ *  More mutex areas around flush_channel.
+ *
  * Revision 1.9  2001/09/28 20:34:08  steve
  *  Fix dangling cancel routines.
  *

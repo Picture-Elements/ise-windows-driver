@@ -23,6 +23,7 @@ struct ConsoleExt {
       char*log_buf;
       unsigned ptr;
       unsigned fill;
+      KSPIN_LOCK mutex;
 };
 
 static struct ConsoleExt*cons = 0;
@@ -80,21 +81,20 @@ static void send_data_to_irp(struct ConsoleExt*xcp, IRP*irp)
  */
 NTSTATUS cons_read(DEVICE_OBJECT*dev, IRP*irp)
 {
-      KIRQL flags;
+      KIRQL save_irql;
 
+      KeAcquireSpinLock(&cons->mutex, &save_irql);
 
       if (cons->fill > 0) {
-	    DbgPrint("isecons: Read from buffer of %u bytes\n", cons->fill);
-	    KeRaiseIrql(DISPATCH_LEVEL, &flags);
 	    send_data_to_irp(cons, irp);
-	    KeLowerIrql(flags);
-	    return STATUS_SUCCESS;
+	    KeReleaseSpinLock(&cons->mutex, save_irql);
+	    return irp->IoStatus.Status;
 
       } else {
-	    DbgPrint("isecons: Read EOF from console\n", cons->fill);
 	    irp->IoStatus.Status = STATUS_END_OF_FILE;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    KeReleaseSpinLock(&cons->mutex, save_irql);
 	    return STATUS_END_OF_FILE;
       }
 }
@@ -102,6 +102,7 @@ NTSTATUS cons_read(DEVICE_OBJECT*dev, IRP*irp)
 
 static void write_to_buffer(const char*data, unsigned ndata)
 {
+      KIRQL save_irql;
       unsigned cur;
 
       if (cons == 0) return;
@@ -114,6 +115,8 @@ static void write_to_buffer(const char*data, unsigned ndata)
 	    data += (ndata - LOG_BUF_SIZE);
 	    ndata = LOG_BUF_SIZE;
       }
+
+      KeAcquireSpinLock(&cons->mutex, &save_irql);
 
 	/* Remove enough from the front of the buffer that this
 	   message will fit. */
@@ -138,6 +141,8 @@ static void write_to_buffer(const char*data, unsigned ndata)
 	    data += tcount;
 	    ndata -= tcount;
       }
+
+      KeReleaseSpinLock(&cons->mutex, save_irql);
 }
 
 /*
@@ -257,8 +262,6 @@ void unload_console(DRIVER_OBJECT*drv)
       UNICODE_STRING link_name;
       struct ConsoleExt*xcp = (struct ConsoleExt*)devp->DeviceExtension;
 
-      DbgPrint("ise: unload_console called\n");
-
       RtlInitUnicodeString(&link_name, L"\\DosDevices\\ISECONS");
       IoDeleteSymbolicLink(&link_name);
 
@@ -294,6 +297,7 @@ NTSTATUS create_console(DRIVER_OBJECT*drv)
 
       xcp->ptr = 0;
       xcp->fill = 0;
+      KeInitializeSpinLock(&xcp->mutex);
 
       cons = xcp;
       devp = dev;
@@ -301,7 +305,6 @@ NTSTATUS create_console(DRIVER_OBJECT*drv)
       RtlInitUnicodeString(&link_name, L"\\DosDevices\\ISECONS");
       IoCreateSymbolicLink(&link_name, &dev_name);
 
-      DbgPrint("ise: ISE console created.\n");
       printk("isecons: Console created.\n");
 
       return STATUS_SUCCESS;
@@ -309,6 +312,9 @@ NTSTATUS create_console(DRIVER_OBJECT*drv)
 
 /*
  * $Log$
+ * Revision 1.4  2001/10/03 17:43:38  steve
+ *  More mutex areas around flush_channel.
+ *
  * Revision 1.3  2001/09/06 01:25:36  steve
  *  Default debug flags off.
  *
