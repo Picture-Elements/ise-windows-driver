@@ -228,6 +228,9 @@ static NTSTATUS flush_channel_2(struct instance_t*xsp, IRP*irp)
       callback_t callback;
       struct channel_t*xpd = get_channel(irp);
 
+	/* Clear the cancel routine set by wait_for_write_ring. */
+      IoSetCancelRoutine(irp, 0);
+
 	/* Set the count for the buffer that I am working on. */
       xpd->table->out[xpd->table->next_out_idx].count = xpd->out_off;
 
@@ -294,6 +297,9 @@ static NTSTATUS sync_channel_2(struct instance_t*xsp, IRP*irp)
 
       callback_t callback = (callback_t)irp->Tail.Overlay.DriverContext[1];
       irp->Tail.Overlay.DriverContext[1] = 0;
+
+	/* Clear the cancel routine set by wait_for_write_ring. */
+      IoSetCancelRoutine(irp, 0);
 
       return (*callback)(xsp, irp);
 }
@@ -756,6 +762,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.9  2001/09/28 20:34:08  steve
+ *  Fix dangling cancel routines.
+ *
  * Revision 1.8  2001/09/28 18:09:53  steve
  *  Create a per-device mutex to manage multi-processor access
  *  to the instance object.

@@ -68,6 +68,7 @@ static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
       struct channel_t*xpd = get_channel(irp);
 
       unsigned long mask;
+
       KeAcquireSpinLock(&xsp->mutex, &save_irql);
       mask = dev_mask_irqs(xsp);
 
@@ -161,6 +162,9 @@ static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp)
       if (debug_flag & UCR_TRACE_CHAN)
 	    printk("ise%u.%u: read check done, performing read.\n",
 		   xsp->id, xpd->channel);
+
+	/* Clear the read_cancel pointer. */
+      IoSetCancelRoutine(irp, 0);
 
       xpd->read_pstate = 300; /* read state for debugging */
 
@@ -381,6 +385,9 @@ static void dev_read_flush_cancel(struct instance_t*xsp, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.7  2001/09/28 20:34:08  steve
+ *  Fix dangling cancel routines.
+ *
  * Revision 1.6  2001/09/28 18:09:53  steve
  *  Create a per-device mutex to manage multi-processor access
  *  to the instance object.
