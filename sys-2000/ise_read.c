@@ -8,7 +8,14 @@
 # include  "ise_sys.h"
 
 static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp);
+static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp);
 
+/*
+ * This is the entry into the chain of events that leads to a read. I
+ * set up the initial state of the read for the IRP, then start the
+ * flush_channel. The flhs_channel will call the text step of the read
+ * when it is done.
+ */
 NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp)
 {
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
@@ -32,9 +39,54 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp)
       return flush_channel(xsp, irp, &dev_read_2);
 }
 
-static void read_2_cancel(DEVICE_OBJECT*dev, IRP*irp);
+static void read_cancel(DEVICE_OBJECT*dev, IRP*irp);
 
+/*
+ * Here the channel is flushed. Now check to see of there is any data
+ * in the channel to be read. If there is *not*, then queue the irp
+ * and set a cancel routine.
+ *
+ * Note that the test for an empty channel needs to be done with
+ * interrupts masked, as an interrupt will cause me to retest.
+ */
 static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct channel_t*xpd = get_channel(irp);
+
+      unsigned long mask = dev_mask_irqs(xsp);
+
+	/* If I can't read *any* data, then wait until I can. */
+      if (CHANNEL_IN_EMPTY(xpd)) {
+	    irp->Tail.Overlay.DriverContext[0] = &dev_read_3;
+	    ExInterlockedInsertTailList(&xsp->pending_read_irps,
+					&irp->Tail.Overlay.ListEntry,
+					&xsp->pending_read_sync);
+	    IoMarkIrpPending(irp);
+	    irp->IoStatus.Status = STATUS_PENDING;
+	    IoSetCancelRoutine(irp, &read_cancel);
+	    dev_unmask_irqs(xsp, mask);
+	    return STATUS_PENDING;
+      }
+
+      dev_unmask_irqs(xsp, mask);
+
+      return dev_read_3(xsp, irp);
+}
+
+/*
+ * At this point we *know* that there is at least some data to read,
+ * so blocking is done. This was either assured by the dev_read_2
+ * function, or failing that the pending_read_dpc function. That means
+ * that this function may haven been called from a thread context or
+ * from the DPC.
+ *
+ * No matter. However we got here, we are going to complete the IRP
+ * with a success, and some amount of data.
+ *
+ * irqs for the board may or may not be blocked by the caller.
+ */
+static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp)
 {
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
       struct channel_t*xpd = get_channel(irp);
@@ -48,17 +100,6 @@ static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
       bytes  += stp->Parameters.Read.ByteOffset.LowPart;
       tcount -= stp->Parameters.Read.ByteOffset.LowPart;
 
-	/* If I can't read *any* data, then wait until I can. */
-      if (CHANNEL_IN_EMPTY(xpd)) {
-	    irp->Tail.Overlay.DriverContext[0] = &dev_read_2;
-	    ExInterlockedInsertTailList(&xsp->pending_read_irps,
-					&irp->Tail.Overlay.ListEntry,
-					&xsp->pending_read_sync);
-	    IoMarkIrpPending(irp);
-	    irp->IoStatus.Status = STATUS_PENDING;
-	    IoSetCancelRoutine(irp, &read_2_cancel);
-	    return STATUS_PENDING;
-      }
 
 	/* By now we believe that there is at least some data to be
 	   read. That means no more blocking. Read what we can into
@@ -110,6 +151,11 @@ static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
       return STATUS_SUCCESS;
 }
 
+/*
+ * This function is invoked as a DPC when the read status of the board
+ * has possibly changed. I check all the pending IRPs, and schedule
+ * the ones that can run.
+ */
 void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 {
       unsigned long mask;
@@ -119,48 +165,70 @@ void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 
 	/* Move the irps from the pending_write_irps list to a tmp
 	   list. Acquire the lock once and run through them with
-	   not-interlocked methods, safe yet efficient.
-
-	   As we do this, remove the cancel routines as well. This
-	   protects us from cancels that can be delivered to these
-	   IRPs. Watch out for the race where a cancel routine might
-	   be started while I have the read_sync. In this case, the
-	   Cancel flag will be set. */
+	   not-interlocked methods, safe yet efficient. */
 
       InitializeListHead(&tmp);
       KeAcquireSpinLockAtDpcLevel(&xsp->pending_read_sync);
+
       while (! IsListEmpty(&xsp->pending_read_irps)) {
 	    LIST_ENTRY*qe;
-	    IRP*irp;
 
 	    qe = RemoveHeadList(&xsp->pending_read_irps);
-	    irp = CONTAINING_RECORD(qe, IRP, Tail.Overlay.ListEntry);
-	    IoSetCancelRoutine(irp, 0);
-	    if (! irp->Cancel)
-		  InsertTailList(&tmp, qe);
+	    InsertTailList(&tmp, qe);
       }
-      KeReleaseSpinLockFromDpcLevel(&xsp->pending_read_sync);
 
 
 	/* Try the listed items and schedule all the ones that have
 	   been released by available space in the write ring for the
-	   channel. */
+	   channel.
+
+	   For each IRP, if it is still blocked on a read, then
+	   re-queue it. Otherwise, call the callback function to
+	   resume it.
+
+	   Note that interrupts from the boar are blocked for the
+	   whole duration of this loop. This is OK as the interrupt
+	   can't do anything other then schedule the DPC, and that is
+	   what I am. So the cost is nothing, and I may even save a
+	   few useless calls to the interrupt handler.
+
+	   Watch out that this IRP may have been cancelled. If that is
+	   the case, do *not* requeue it, just ignore it. */
+
+      mask = dev_mask_irqs(xsp);
+
       while (! IsListEmpty(&tmp)) {
 	    LIST_ENTRY*qe;
 	    IRP*irp;
+	    struct channel_t*xpd;
 	    callback_t call_fun;
 
 	    qe  = RemoveHeadList(&tmp);
 	    irp = CONTAINING_RECORD(qe, IRP, Tail.Overlay.ListEntry);
+	    xpd = get_channel(irp);
+
+	    if (CHANNEL_IN_EMPTY(xpd)) {
+		  if (! irp->Cancel)
+			InsertTailList(&xsp->pending_read_irps, qe);
+
+		  continue;
+	    }
+
+	    IoSetCancelRoutine(irp, 0);
+	    if (irp->Cancel)
+		  continue;
 
 	    call_fun = (callback_t) irp->Tail.Overlay.DriverContext[0];
 	    irp->Tail.Overlay.DriverContext[0] = 0;
-
 	    (*call_fun) (xsp, irp);
       }
+
+      dev_unmask_irqs(xsp, mask);
+
+      KeReleaseSpinLockFromDpcLevel(&xsp->pending_read_sync);
 }
 
-static void read_2_cancel(DEVICE_OBJECT*dev, IRP*irp)
+static void read_cancel(DEVICE_OBJECT*dev, IRP*irp)
 {
       KIRQL irql;
       struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
@@ -179,6 +247,9 @@ static void read_2_cancel(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.3  2001/09/05 01:19:58  steve
+ *  make read robust to multiple blocked read attempts.
+ *
  * Revision 1.2  2001/07/30 21:32:42  steve
  *  Rearrange the status path to follow the return codes of
  *  the callbacks, and preliminary implementation of the
