@@ -145,7 +145,15 @@ void ise_free_frame(struct instance_t*xsp, unsigned fidx)
       unsigned long page_count, table_size;
       PHYSICAL_ADDRESS frame_bus;
       unsigned idx;
+
+	/* If the reference count is set, then the frame is locked
+	   down and I should not free it. */
       if (xsp->frame_ref[fidx] > 0)
+	    return;
+
+	/* If the frame does not exist, then there is nothing to
+	   free. */
+      if (xsp->frame_mdl[fidx] == 0)
 	    return;
 
       page_count = xsp->frame_tab[fidx]->page_count;
@@ -178,6 +186,9 @@ void ise_free_frame(struct instance_t*xsp, unsigned fidx)
 
 /*
  * $Log$
+ * Revision 1.2  2001/09/05 01:17:01  steve
+ *  do not release frames that do not exist.
+ *
  * Revision 1.1  2001/09/04 02:47:09  steve
  *  Add frame allocate/free/map/unmap controls.
  *
