@@ -7,7 +7,7 @@
 
 # include  "ise_sys.h"
 
-static void dev_read_2(struct instance_t*xsp, IRP*irp);
+static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp);
 
 NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -29,13 +29,12 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp)
 	/* Start the read with a flush of the write side. This gets
 	   the board thinking about the last write command that I
 	   might have sent. */
-      flush_channel(xsp, irp, &dev_read_2);
-      return irp->IoStatus.Status;
+      return flush_channel(xsp, irp, &dev_read_2);
 }
 
 static void read_2_cancel(DEVICE_OBJECT*dev, IRP*irp);
 
-static void dev_read_2(struct instance_t*xsp, IRP*irp)
+static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
 {
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
       struct channel_t*xpd = get_channel(irp);
@@ -58,7 +57,7 @@ static void dev_read_2(struct instance_t*xsp, IRP*irp)
 	    IoMarkIrpPending(irp);
 	    irp->IoStatus.Status = STATUS_PENDING;
 	    IoSetCancelRoutine(irp, &read_2_cancel);
-	    return;
+	    return STATUS_PENDING;
       }
 
 	/* By now we believe that there is at least some data to be
@@ -108,6 +107,7 @@ static void dev_read_2(struct instance_t*xsp, IRP*irp)
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = stp->Parameters.Read.ByteOffset.LowPart;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
 }
 
 void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
@@ -179,6 +179,11 @@ static void read_2_cancel(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.2  2001/07/30 21:32:42  steve
+ *  Rearrange the status path to follow the return codes of
+ *  the callbacks, and preliminary implementation of the
+ *  RUN_PROGRAM ioctl.
+ *
  * Revision 1.1  2001/07/26 00:31:30  steve
  *  Windows 2000 driver.
  *

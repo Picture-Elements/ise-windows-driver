@@ -10,8 +10,19 @@
 /*
  * Output to the ISE board is managed through a ring of CHANNEL_OBUFS
  * buffers in the channel_table. This is a buffer ring managed by the
- * next_out_idx and first_out_idx members.
+ * next_out_idx and first_out_idx members. The driver sends buffers to
+ * the ISE board by moving the next_out_idx pointer, and the ISE board
+ * frees (consumes) buffers by moving the first_out_idx pointer in the
+ * channel table. The synchronization process is simplified by the
+ * knowledge that each pointer is manipulated by only one side.
+ *
+ * Very nearly the only moment of synchronization is when the write
+ * ring is full. In that case, attempts by the driver to go to the
+ * next buffer should block. That feat is managed by the
+ * wait_for_write_ring method.
  */
+
+typedef int (*ring_test_t)(struct channel_t*xpd);
 
 static int write_ring_space_available(struct channel_t*xpd)
 {
@@ -19,9 +30,22 @@ static int write_ring_space_available(struct channel_t*xpd)
 	    != xpd->table->first_out_idx;
 }
 
+static int write_ring_space_empty(struct channel_t*xpd)
+{
+      return xpd->table->first_out_idx == xpd->table->next_out_idx;
+}
+
+/*
+ * The wait_for_write_ring method is called by the flush code to
+ * schedule the IRP for some time in the future when the write ring is
+ * not full. The wait_for_write_ring marks the IRP pending and puts it
+ * into the pending_write_irps list, where the IRP sits until the
+ * pending_write_dpc is called.
+ */
 static void wait_for_write_ring(struct instance_t*xsp,
 				struct channel_t*xpd,
-				IRP*irp, callback_t callback)
+				IRP*irp, callback_t callback,
+				ring_test_t tester)
 {
       unsigned long mask = dev_mask_irqs(xsp);
 
@@ -30,7 +54,13 @@ static void wait_for_write_ring(struct instance_t*xsp,
 		   " in wait_for_write_ring\n", xsp->id, xpd->channel);
       }
 
+      if (irp->Tail.Overlay.DriverContext[3] != 0) {
+	    printk("ise%u.%u: warning: DriverContext[3] overrun"
+		   " in wait_for_write_ring\n", xsp->id, xpd->channel);
+      }
+
       irp->Tail.Overlay.DriverContext[0] = callback;
+      irp->Tail.Overlay.DriverContext[3] = tester;
       ExInterlockedInsertTailList(&xsp->pending_write_irps,
 				  &irp->Tail.Overlay.ListEntry,
 				  &xsp->pending_write_sync);
@@ -41,6 +71,15 @@ static void wait_for_write_ring(struct instance_t*xsp,
       dev_unmask_irqs(xsp, mask);
 }
 
+/*
+ * The pending_write_dpc function is called when the interrupt handler
+ * detects a change in the table state, or as a result of the initial
+ * queue by the wait_for_write_ring. The dpc pulls IRPS of the pending
+ * list and checks to see if their channel has space. If it does, the
+ * IRP is run with its associated callback. Otherwise, it is replaced
+ * on the queue. The ordering within the queue is preserved, so it is
+ * impossible for an IRP to starve another.
+ */
 void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 {
       unsigned long mask;
@@ -68,15 +107,19 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	    LIST_ENTRY*qe;
 	    IRP*irp;
 	    struct channel_t*xpd;
+	    callback_t call_fun;
+	    ring_test_t test_fun;
 
 	    qe  = RemoveHeadList(&tmp);
 	    irp = CONTAINING_RECORD(qe, IRP, Tail.Overlay.ListEntry);
 	    xpd = get_channel(irp);
 
-	    if (write_ring_space_available(xpd)) {
+	    test_fun = (ring_test_t) irp->Tail.Overlay.DriverContext[3];
+	    if ((*test_fun)(xpd)) {
 		  callback_t call_fun = (callback_t)
 			irp->Tail.Overlay.DriverContext[0];
 		  irp->Tail.Overlay.DriverContext[0] = 0;
+		  irp->Tail.Overlay.DriverContext[3] = 0;
 
 		  (*call_fun) (xsp, irp);
 
@@ -107,7 +150,7 @@ void pending_write_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
  * function returns STATUS_PENDING. The flush_channel_2 function will
  * be called some time in the future, and it will call the callback.
  */
-static void flush_channel_2(struct instance_t*xsp, IRP*irp);
+static NTSTATUS flush_channel_2(struct instance_t*xsp, IRP*irp);
 
 NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp, callback_t callback)
 {
@@ -116,8 +159,7 @@ NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp, callback_t callback)
       struct channel_t*xpd = get_channel(irp);
 
       if (xpd->out_off == 0) {
-	    (*callback)(xsp, irp);
-	    return STATUS_SUCCESS;
+	    return (*callback)(xsp, irp);
       }
 
       if (irp->Tail.Overlay.DriverContext[1] != 0) {
@@ -126,7 +168,8 @@ NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp, callback_t callback)
       }
 
       irp->Tail.Overlay.DriverContext[1] = callback;
-      wait_for_write_ring(xsp, xpd, irp, flush_channel_2);
+      wait_for_write_ring(xsp, xpd, irp, flush_channel_2,
+			  write_ring_space_available);
       return STATUS_PENDING;
 }
 
@@ -136,7 +179,7 @@ NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp, callback_t callback)
  * available in the write ring. Shift the current buffer into that
  * space and start a new empty buffer.
  */
-static void flush_channel_2(struct instance_t*xsp, IRP*irp)
+static NTSTATUS flush_channel_2(struct instance_t*xsp, IRP*irp)
 {
       unsigned rc;
       callback_t callback;
@@ -160,7 +203,7 @@ static void flush_channel_2(struct instance_t*xsp, IRP*irp)
       callback = (callback_t)irp->Tail.Overlay.DriverContext[1];
       irp->Tail.Overlay.DriverContext[1] = 0;
 
-      (*callback)(xsp, irp);
+      return (*callback)(xsp, irp);
 }
 
 /*
@@ -174,7 +217,7 @@ static void flush_channel_2(struct instance_t*xsp, IRP*irp)
  * callback to sync_channel_2, so I use DriverContext[1] for the
  * callback that is passed to me.
  */
-static void sync_channel_2(struct instance_t*xsp, IRP*irp);
+static NTSTATUS sync_channel_2(struct instance_t*xsp, IRP*irp);
 
 static NTSTATUS sync_channel(struct instance_t*xsp, IRP*irp,
 			     callback_t callback)
@@ -182,8 +225,7 @@ static NTSTATUS sync_channel(struct instance_t*xsp, IRP*irp,
       struct channel_t*xpd = get_channel(irp);
 
       if (xpd->table->first_out_idx == xpd->table->next_out_idx) {
-	    (*callback)(xsp, irp);
-	    return STATUS_SUCCESS;
+	    return (*callback)(xsp, irp);
       }
 
       if (irp->Tail.Overlay.DriverContext[1] != 0) {
@@ -192,7 +234,8 @@ static NTSTATUS sync_channel(struct instance_t*xsp, IRP*irp,
       }
 
       irp->Tail.Overlay.DriverContext[1] = callback;
-      wait_for_write_ring(xsp, xpd, irp, sync_channel_2);
+      wait_for_write_ring(xsp, xpd, irp, sync_channel_2,
+			  write_ring_space_empty);
       return STATUS_PENDING;
 }
 
@@ -201,20 +244,14 @@ static NTSTATUS sync_channel(struct instance_t*xsp, IRP*irp,
  * ring is now really empty, then call the callback. Otherwise, retry
  * the wait.
  */
-static void sync_channel_2(struct instance_t*xsp, IRP*irp)
+static NTSTATUS sync_channel_2(struct instance_t*xsp, IRP*irp)
 {
       struct channel_t*xpd = get_channel(irp);
 
-      if (xpd->table->first_out_idx == xpd->table->next_out_idx) {
-	    callback_t callback =
-		  (callback_t)irp->Tail.Overlay.DriverContext[1];
-	    irp->Tail.Overlay.DriverContext[1] = 0;
+      callback_t callback = (callback_t)irp->Tail.Overlay.DriverContext[1];
+      irp->Tail.Overlay.DriverContext[1] = 0;
 
-	    (*callback)(xsp, irp);
-	    return;
-      }
-
-      wait_for_write_ring(xsp, xpd, irp, sync_channel_2);
+      return (*callback)(xsp, irp);
 }
 
 static NTSTATUS dev_ioctl_flush(DEVICE_OBJECT*dev, IRP*irp)
@@ -223,7 +260,7 @@ static NTSTATUS dev_ioctl_flush(DEVICE_OBJECT*dev, IRP*irp)
       return flush_channel(xsp, irp, complete_success);
 }
 
-static void dev_ioctl_sync_2(struct instance_t*xsp, IRP*irp);
+static NTSTATUS dev_ioctl_sync_2(struct instance_t*xsp, IRP*irp);
 
 static NTSTATUS dev_ioctl_sync(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -231,13 +268,12 @@ static NTSTATUS dev_ioctl_sync(DEVICE_OBJECT*dev, IRP*irp)
       struct instance_t*xsp = (struct instance_t*)dev->DeviceExtension;
       struct channel_t*xpd = get_channel(irp);
 
-      flush_channel(xsp, irp, dev_ioctl_sync_2);
-      return irp->IoStatus.Status;
+      return flush_channel(xsp, irp, dev_ioctl_sync_2);
 }
 
-static void dev_ioctl_sync_2(struct instance_t*xsp, IRP*irp)
+static NTSTATUS dev_ioctl_sync_2(struct instance_t*xsp, IRP*irp)
 {
-      sync_channel(xsp, irp, complete_success);
+      return sync_channel(xsp, irp, complete_success);
 }
 
 /*
@@ -245,7 +281,7 @@ static void dev_ioctl_sync_2(struct instance_t*xsp, IRP*irp)
  * through several states on the way, so there are lots of callbacks
  * that lead to me.
  */
-static void dev_ioctl_channel_2(struct instance_t*xsp, IRP*irp);
+static NTSTATUS dev_ioctl_channel_2(struct instance_t*xsp, IRP*irp);
 
 static NTSTATUS dev_ioctl_channel(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -264,7 +300,7 @@ static NTSTATUS dev_ioctl_channel(DEVICE_OBJECT*dev, IRP*irp)
 
       arg = *(unsigned long*)irp->AssociatedIrp.SystemBuffer;
 
-      printk("ise%u: iotcl switch from channel %u to %u\n",
+      printk("ise%u: ioctl switch from channel %u to %u\n",
 	     xsp->id, xpd->channel, arg);
 
       if (arg >= ROOT_TABLE_CHANNELS) {
@@ -293,21 +329,20 @@ static NTSTATUS dev_ioctl_channel(DEVICE_OBJECT*dev, IRP*irp)
       irp->Tail.Overlay.DriverContext[0] = 0;
       irp->Tail.Overlay.DriverContext[1] = 0;
 
-      flush_channel(xsp, irp, dev_ioctl_channel_2);
-      return irp->IoStatus.Status;
+      return flush_channel(xsp, irp, dev_ioctl_channel_2);
 }
 
-static void dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp);
+static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp);
 
-static void dev_ioctl_channel_2(struct instance_t*xsp, IRP*irp)
+static NTSTATUS dev_ioctl_channel_2(struct instance_t*xsp, IRP*irp)
 {
-      printk("ise%u: iotcl switch flush complete, starting sync...\n",
+      printk("ise%u: ioctl switch flush complete, starting sync...\n",
 	     xsp->id);
 
-      sync_channel(xsp, irp, dev_ioctl_channel_3);
+      return sync_channel(xsp, irp, dev_ioctl_channel_3);
 }
 
-static void dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
+static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
 {
       struct root_table*newroot;
       PHYSICAL_ADDRESS newrootl;
@@ -323,7 +358,7 @@ static void dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
 	    irp->IoStatus.Status = STATUS_NO_MEMORY;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
-	    return;
+	    return STATUS_NO_MEMORY;
       }
 
       printk("ise%u: Switch from channel %u to %u\n", xsp->id,
@@ -338,6 +373,7 @@ static void dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
       xpd->channel = (unsigned short)arg;
 
       root_to_board(xsp, irp, newroot, newrootl, complete_success);
+      return STATUS_PENDING;
 }
 
 NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
@@ -376,6 +412,11 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.2  2001/07/30 21:32:42  steve
+ *  Rearrange the status path to follow the return codes of
+ *  the callbacks, and preliminary implementation of the
+ *  RUN_PROGRAM ioctl.
+ *
  * Revision 1.1  2001/07/26 00:31:30  steve
  *  Windows 2000 driver.
  *

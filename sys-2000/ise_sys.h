@@ -13,7 +13,7 @@
 
 struct instance_t;
 struct channel_t;
-typedef void (*callback_t)(struct instance_t*xsp, IRP*irp);
+typedef NTSTATUS (*callback_t)(struct instance_t*xsp, IRP*irp);
 
 
 /* TheISE driver is the communication path into the target
@@ -52,6 +52,7 @@ extern DEVICE_OBJECT* create_isex(DRIVER_OBJECT*drv, struct instance_t*xsp);
 extern void remove_isex(DEVICE_OBJECT*fdx);
 
 extern NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp);
+extern NTSTATUS isex_run_program(DEVICE_OBJECT*dev, IRP*irp);
 
 
 
@@ -67,6 +68,14 @@ extern NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp);
  *    Pass a new root table to the ISE board. The fun parameter is a
  *    callback to be invoked when the target board receives the table.
  *
+ * flush_channel
+ *    Cause the current buffer to be handed off to the device, whether
+ *    it is full or not. If the write ring is full, this will
+ *    block. At any rate, the callback will be called when there is
+ *    space and the flush is completed.
+ *
+ *    This uses IRP DriverContext members 0, 1 and 3.
+ *
  * complete_success
  *    A commonly used callback, that just completes the IRP.
  */
@@ -79,7 +88,7 @@ extern void root_to_board(struct instance_t*xsp, IRP*irp,
 extern NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp,
 			      callback_t callback);
 
-extern void complete_success(struct instance_t*xsp, IRP*irp);
+extern NTSTATUS complete_success(struct instance_t*xsp, IRP*irp);
 
 
 /* The ISE driver has a single console device (independent of the
@@ -130,6 +139,8 @@ struct instance_t {
 	   the physical address and the kernel virtual address.*/
       PHYSICAL_ADDRESS rootl;
       struct root_table*root;
+
+      unsigned char config_buf[4];
 
 	/* These members hold the context of the root transfer. This
 	   implies that there is only one pending root transfer active
@@ -214,6 +225,11 @@ extern void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.2  2001/07/30 21:32:42  steve
+ *  Rearrange the status path to follow the return codes of
+ *  the callbacks, and preliminary implementation of the
+ *  RUN_PROGRAM ioctl.
+ *
  * Revision 1.1  2001/07/26 00:31:30  steve
  *  Windows 2000 driver.
  *

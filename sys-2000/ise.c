@@ -110,11 +110,12 @@ void root_to_board(struct instance_t*xsp, IRP*irp,
       dev_unmask_irqs(xsp, mask);
 }
 
-void complete_success(struct instance_t*xsp, IRP*irp)
+NTSTATUS complete_success(struct instance_t*xsp, IRP*irp)
 {
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = 0;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
 }
 
 static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
@@ -169,6 +170,7 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 	   channel. This will last as long as the handle is open. */
       xpd = ExAllocatePool(NonPagedPool, sizeof(struct channel_t));
       if (xpd == 0) {
+	    printk("ise%u: No memory for channel structure\n", xsp->id);
 	    irp->IoStatus.Status = STATUS_NO_MEMORY;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -182,7 +184,8 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 
 	/* Prevent a duplicate open of channel 0. */
       if (channel_by_id(xsp, 0) != 0) {
-	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    printk("ise%u: Channel 0 busy during create.\n", xsp->id);
+	    irp->IoStatus.Status = STATUS_DEVICE_ALREADY_ATTACHED;
 	    goto error_cleanup;
       }
 
@@ -272,7 +275,7 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
  * the view of the target board. After that completes, the dev_close_2
  * function will be called to clean up the rest of the way.
  */
-static void dev_close_2(struct instance_t*xsp, IRP*irp);
+static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp);
 
 NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -288,9 +291,11 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
       return STATUS_PENDING;
 }
 
-static void dev_close_2(struct instance_t*xsp, IRP*irp)
+static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp)
 {
       struct channel_t*xpd = get_channel(irp);
+
+      printk("ise%u.%u: Close the channel\n", xsp->id, xpd->channel);
 
 	/* No more communication with the target channel, so remove
 	   the channel_t structure from the channel list. */
@@ -339,6 +344,7 @@ static void dev_close_2(struct instance_t*xsp, IRP*irp)
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = 0;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
 }
 
 /*
@@ -665,6 +671,11 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.2  2001/07/30 21:32:42  steve
+ *  Rearrange the status path to follow the return codes of
+ *  the callbacks, and preliminary implementation of the
+ *  RUN_PROGRAM ioctl.
+ *
  * Revision 1.1  2001/07/26 00:31:30  steve
  *  Windows 2000 driver.
  *

@@ -25,7 +25,8 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 
 	/* Cannot restart the board if there are any channels open. */
       if (xsp->channels != 0) {
-	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Status = STATUS_DEVICE_ALREADY_ATTACHED;
+	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
 	    return irp->IoStatus.Status;
       }
@@ -60,6 +61,7 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
       IoCompleteRequest(irp, IO_NO_INCREMENT);
       return irp->IoStatus.Status;
 }
+
 
 static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -148,6 +150,28 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
       return irp->IoStatus.Status;
 }
 
+static NTSTATUS isex_set_trace(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      unsigned long arg;
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof arg) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      arg = *(unsigned long*)irp->AssociatedIrp.SystemBuffer;
+
+      printk("ise: Set trace %x\n", arg);
+      debug_flag = arg;
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return irp->IoStatus.Status;
+}
+
 NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 {
       IO_STACK_LOCATION*iop = IoGetCurrentIrpStackLocation(irp);
@@ -156,6 +180,12 @@ NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 	  case UCRX_RESTART_BOARD:
 	    return ucrx_restart_board(dev, irp);
+
+	  case UCRX_RUN_PROGRAM:
+	    return isex_run_program(dev, irp);
+
+	  case UCRX_SET_TRACE:
+	    return isex_set_trace(dev, irp);
 
 	  case UCRX_DIAGNOSE:
 	    return isex_diagnose(dev, irp);
@@ -266,6 +296,11 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.2  2001/07/30 21:32:43  steve
+ *  Rearrange the status path to follow the return codes of
+ *  the callbacks, and preliminary implementation of the
+ *  RUN_PROGRAM ioctl.
+ *
  * Revision 1.1  2001/07/26 00:31:30  steve
  *  Windows 2000 driver.
  *

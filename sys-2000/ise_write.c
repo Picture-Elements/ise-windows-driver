@@ -8,7 +8,7 @@
 # include  "ise_sys.h"
 
 
-static void dev_write_2(struct instance_t*xsp, IRP*irp);
+static NTSTATUS dev_write_2(struct instance_t*xsp, IRP*irp);
 
 NTSTATUS dev_write(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -26,11 +26,10 @@ NTSTATUS dev_write(DEVICE_OBJECT*dev, IRP*irp)
 		   xsp->id, xpd->channel, stp->Parameters.Write.Length);
 
 
-      dev_write_2(xsp, irp);
-      return irp->IoStatus.Status;
+      return dev_write_2(xsp, irp);
 }
 
-static void dev_write_2(struct instance_t*xsp, IRP*irp)
+static NTSTATUS dev_write_2(struct instance_t*xsp, IRP*irp)
 {
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
       struct channel_t*xpd = get_channel(irp);
@@ -71,8 +70,9 @@ static void dev_write_2(struct instance_t*xsp, IRP*irp)
 		 ISE board for reading. */
 	    if (xpd->out_off == xpd->table->out[idx].count) {
 
-		  flush_channel(xsp, irp, dev_write_2);
-		  return;
+		  printk("ise%u.%u (d): flush loaded write buffer\n",
+			 xsp->id, xpd->channel, count-tcount);
+		  return flush_channel(xsp, irp, dev_write_2);
 	    }
       }
 
@@ -83,11 +83,17 @@ static void dev_write_2(struct instance_t*xsp, IRP*irp)
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = stp->Parameters.Write.ByteOffset.LowPart;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
 }
 
 
 /*
  * $Log$
+ * Revision 1.2  2001/07/30 21:32:43  steve
+ *  Rearrange the status path to follow the return codes of
+ *  the callbacks, and preliminary implementation of the
+ *  RUN_PROGRAM ioctl.
+ *
  * Revision 1.1  2001/07/26 00:31:30  steve
  *  Windows 2000 driver.
  *
