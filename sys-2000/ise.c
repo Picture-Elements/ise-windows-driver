@@ -276,9 +276,11 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
       ExFreePool(xpd);
       get_channel(irp) = 0;
 
-      irp->IoStatus.Information = 0;
-      IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      { NTSTATUS status = irp->IoStatus.Status;
+        irp->IoStatus.Information = 0;
+	IoCompleteRequest(irp, IO_NO_INCREMENT);
+	return status;
+      }
 }
 
 
@@ -448,7 +450,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	    printk("ise%u: no resources?!\n", xsp->id);
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
-	    return irp->IoStatus.Status;
+	    return STATUS_UNSUCCESSFUL;
       }
 
 	/* Scan the translated resources, looking for the bits that I
@@ -502,7 +504,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 				  xsp->irql, xsp->irql, LevelSensitive,
 				  TRUE, xsp->affinity, FALSE);
 
-      if (status != STATUS_SUCCESS) {
+      if (!NT_SUCCESS(status)) {
 	    switch (status) {
 		case STATUS_INSUFFICIENT_RESOURCES:
 		  printk("ise%u: IoConnectInterrupt reported "
@@ -582,7 +584,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	/* All done. Return success. */
       irp->IoStatus.Status = STATUS_SUCCESS;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      return STATUS_SUCCESS;
 }
 
 /*
@@ -669,7 +671,7 @@ DEVICE_OBJECT*create_ise(DRIVER_OBJECT*drv, unsigned dev_no)
       status = IoCreateDevice(drv, sizeof(struct instance_t), &dev_str,
 			      FILE_DEVICE_ISE, 0, FALSE, &fdo);
 
-      if (status != STATUS_SUCCESS)
+      if (!NT_SUCCESS(status))
 	    return 0;
 
       RtlZeroMemory(fdo->DeviceExtension, sizeof(struct instance_t));
@@ -734,6 +736,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.10  2002/04/10 23:20:27  steve
+ *  Do not touch IRP after it is completed.
+ *
  * Revision 1.9  2002/04/10 21:05:05  steve
  *  Handling failure to get bars.
  *

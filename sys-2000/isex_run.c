@@ -29,7 +29,7 @@ NTSTATUS isex_run_program(DEVICE_OBJECT*dev, IRP*irp)
 	    irp->IoStatus.Status = STATUS_DEVICE_ALREADY_ATTACHED;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
-	    return irp->IoStatus.Status;
+	    return STATUS_DEVICE_ALREADY_ATTACHED;
       }
 
       state = dev_get_status_resp(xsp);
@@ -42,13 +42,13 @@ NTSTATUS isex_run_program(DEVICE_OBJECT*dev, IRP*irp)
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
-	    return irp->IoStatus.Status;
+	    return STATUS_UNSUCCESSFUL;
 
 	  case 1:
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
-	    return irp->IoStatus.Status;
+	    return STATUS_UNSUCCESSFUL;
 
 	  default:
 	    break;
@@ -70,11 +70,14 @@ NTSTATUS isex_run_program(DEVICE_OBJECT*dev, IRP*irp)
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = 0;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      return STATUS_SUCCESS;
 }
 
 /*
  * $Log$
+ * Revision 1.3  2002/04/10 23:20:27  steve
+ *  Do not touch IRP after it is completed.
+ *
  * Revision 1.2  2001/08/03 17:39:41  steve
  *  Use status method to run programs.
  *

@@ -43,7 +43,7 @@ unsigned long debug_flag = 0x0000;
  * out.
  */
 
-static void send_data_to_irp(struct ConsoleExt*xcp, IRP*irp)
+static NTSTATUS send_data_to_irp(struct ConsoleExt*xcp, IRP*irp)
 {
 	/* If there are bytes in the log buffer, read them out
 	   and complete the READ immediately, even if this is a
@@ -71,6 +71,7 @@ static void send_data_to_irp(struct ConsoleExt*xcp, IRP*irp)
       }
 
       IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
 }
 
 /*
@@ -86,9 +87,9 @@ NTSTATUS cons_read(DEVICE_OBJECT*dev, IRP*irp)
       KeAcquireSpinLock(&cons->mutex, &save_irql);
 
       if (cons->fill > 0) {
-	    send_data_to_irp(cons, irp);
+	    NTSTATUS status = send_data_to_irp(cons, irp);
 	    KeReleaseSpinLock(&cons->mutex, save_irql);
-	    return irp->IoStatus.Status;
+	    return status;
 
       } else {
 	    irp->IoStatus.Status = STATUS_END_OF_FILE;
@@ -312,6 +313,9 @@ NTSTATUS create_console(DRIVER_OBJECT*drv)
 
 /*
  * $Log$
+ * Revision 1.5  2002/04/10 23:20:27  steve
+ *  Do not touch IRP after it is completed.
+ *
  * Revision 1.4  2001/10/03 17:43:38  steve
  *  More mutex areas around flush_channel.
  *

@@ -29,7 +29,7 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 	    irp->IoStatus.Status = STATUS_DEVICE_ALREADY_ATTACHED;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
-	    return irp->IoStatus.Status;
+	    return STATUS_DEVICE_ALREADY_ATTACHED;
       }
 
       if (debug_flag&UCR_TRACE_UCRX)
@@ -61,7 +61,7 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      return STATUS_SUCCESS;
 }
 
 static void isex_diagnose0(struct instance_t*xsp, IRP*irp)
@@ -116,7 +116,10 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
       switch (arg) {
 
 	  case 0:
-	    isex_diagnose0(xsp, irp);
+	    if (xsp->bar0_size == 0)
+		  printk("ise%u: <** Device Not Mapped **>\n", xsp->id);
+	    else
+		  isex_diagnose0(xsp, irp);
 	    break;
 
 	  case 1:
@@ -129,19 +132,23 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 		   xsp->pending_read_count.complete,
 		   xsp->pending_read_count.cancelled);
 
-	    printk("ise%u: root_table = (base=%x resp=%x), "
-		   "IDR=%x, IIMR=%x, ODR=%x, OIMR=%x\n", xsp->id,
-		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10)),
-		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)),
-		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x20)),
-		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x28)),
-		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x2c)),
-		   READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34)));
-		   
+	    if (xsp->bar0_size > 0)
+		  printk("ise%u: root_table = (base=%x resp=%x), "
+		       "IDR=%x, IIMR=%x, ODR=%x, OIMR=%x\n", xsp->id,
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x10)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x18)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x20)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x28)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x2c)),
+		       READ_REGISTER_ULONG((ULONG*)((char*)xsp->bar0 + 0x34)));
+	    else
+		  printk("ise%u: <** Device Not Mapped **>\n", xsp->id);
+
 	    printk("ise%u: ROOT TABLE at %p(%x) "
 		   "MAGIC=[%x:%x]\n", xsp->id, xsp->root,
-		   xsp->root->self, xsp->root->magic,
-		   xsp->root->self);
+		   xsp->root? xsp->root->self  : 0x00000000,
+		   xsp->root? xsp->root->magic : 0x00000000,
+		   xsp->root? xsp->root->self  : 0x00000000);
 
 	    if (xsp->channels) {
 		  struct channel_t*xpd = xsp->channels;
@@ -181,19 +188,23 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 		  } while (xsp->channels != xpd);
 	    }
 
-	    for (idx = 0 ;  idx < 16 ;  idx += 1) {
-		  printk("ise%u frame %u: ptr=0x%x, magic=0x%x\n",
-			 xsp->id, idx,
-			 xsp->root->frame_table[idx].ptr,
-			 xsp->root->frame_table[idx].magic);
-	    }
+	    if (xsp->root)
+		  for (idx = 0 ;  idx < 16 ;  idx += 1) {
+			printk("ise%u frame %u: ptr=0x%x, magic=0x%x\n",
+			       xsp->id, idx,
+			       xsp->root->frame_table[idx].ptr,
+			       xsp->root->frame_table[idx].magic);
+		  }
+	    else
+		  printk("ise%u: No root table, so no frames.\n", xsp->id);
+
 	    break;
 
       }
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      return STATUS_SUCCESS;
 }
 
 static NTSTATUS isex_timeout(DEVICE_OBJECT*dev, IRP*irp)
@@ -230,7 +241,7 @@ static NTSTATUS isex_timeout(DEVICE_OBJECT*dev, IRP*irp)
 	    xpd->read_timeout = arg->read_timeout;
 	    irp->IoStatus.Status = STATUS_SUCCESS;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
-	    return irp->IoStatus.Status;
+	    return STATUS_SUCCESS;
       }
 
       
@@ -243,7 +254,7 @@ static NTSTATUS isex_timeout(DEVICE_OBJECT*dev, IRP*irp)
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      return STATUS_SUCCESS;
 }
 
 static NTSTATUS isex_get_trace(DEVICE_OBJECT*dev, IRP*irp)
@@ -262,7 +273,7 @@ static NTSTATUS isex_get_trace(DEVICE_OBJECT*dev, IRP*irp)
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      return STATUS_SUCCESS;
 }
 
 static NTSTATUS isex_set_trace(DEVICE_OBJECT*dev, IRP*irp)
@@ -284,7 +295,7 @@ static NTSTATUS isex_set_trace(DEVICE_OBJECT*dev, IRP*irp)
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      return STATUS_SUCCESS;
 }
 
 NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
@@ -316,7 +327,7 @@ NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
       irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
       irp->IoStatus.Information = 0;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
-      return irp->IoStatus.Status;
+      return STATUS_UNSUCCESSFUL;
 }
 
 /*
@@ -355,7 +366,7 @@ DEVICE_OBJECT *create_isex(DRIVER_OBJECT*drv, struct instance_t*xsp)
       status = IoCreateDevice(drv, sizeof(struct instance_t*), &dev_str,
 			      FILE_DEVICE_UCRX, 0, FALSE, &fdx);
 
-      if (status != STATUS_SUCCESS)
+      if (!NT_SUCCESS(status))
 	    return 0;
       dos_str.Buffer = dos_buf;
       dos_str.MaximumLength = sizeof(dos_buf);
@@ -418,6 +429,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.8  2002/04/10 23:20:27  steve
+ *  Do not touch IRP after it is completed.
+ *
  * Revision 1.7  2001/09/28 18:09:54  steve
  *  Create a per-device mutex to manage multi-processor access
  *  to the instance object.

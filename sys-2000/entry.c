@@ -151,7 +151,7 @@ static NTSTATUS xxPnP(DEVICE_OBJECT*fdo, IRP*irp)
 	    printk("ise%u: QUERY_STOP_DEVICE called\n", xsp->id);
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
-	    return irp->IoStatus.Status;
+	    return STATUS_UNSUCCESSFUL;
 
 	  case IRP_MN_STOP_DEVICE:
 	    return pnp_stop_device(fdo, irp);
@@ -241,7 +241,7 @@ static NTSTATUS pnp_start_device(DEVICE_OBJECT*fdo, IRP*irp)
 
 	/* If there was an error in lower drivers, then skip my device
 	   (log a convenient message) and pass the code up. */
-      if (status != STATUS_SUCCESS) {
+      if (!NT_SUCCESS(status)) {
 	    printk("ise%u: START_DEVICE error from lower device: 0x%x\n",
 		   xsp->id, status);
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -379,6 +379,9 @@ NTSTATUS DriverEntry(DRIVER_OBJECT*drv, UNICODE_STRING*path)
 
 /*
  * $Log$
+ * Revision 1.3  2002/04/10 23:20:27  steve
+ *  Do not touch IRP after it is completed.
+ *
  * Revision 1.2  2002/04/10 21:05:30  steve
  *  Add stup WMI and Power functions
  *
