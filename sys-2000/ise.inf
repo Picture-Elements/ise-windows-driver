@@ -13,7 +13,7 @@ Class=Image
 ClassGuid={6bdd1fc6-810f-11d0-bec7-08002be2092f}
 ;CatalogFile=ise.cat
 
-DriverVer=09/28/2001,1.2.0.1
+DriverVer=10/08/2001,1.2.0.5
 
 ;
 ; Driver information

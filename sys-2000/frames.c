@@ -39,8 +39,10 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 	   pointers will be filled in as the pages are allocated. */
       table_size = sizeof(struct frame_table) + page_count * sizeof(__u32);
       xsp->frame_tab[fidx] = xsp->dma->DmaOperations->AllocateCommonBuffer(
-				    xsp->dma, frame_size, &frame_bus, FALSE);
+				    xsp->dma, table_size, &frame_bus, FALSE);
       if (xsp->frame_tab[fidx] == 0) {
+	    printk("ise%u: Unable to allocate frame_tab[%u]\n",
+		   xsp->id, fidx);
 	    return 0;
       }
 
@@ -214,6 +216,9 @@ void ise_free_frame(struct instance_t*xsp, unsigned fidx)
 
 /*
  * $Log$
+ * Revision 1.5  2001/10/08 23:25:31  steve
+ *  Made frame_tab too big. Get the size right.
+ *
  * Revision 1.4  2001/10/04 20:51:44  steve
  *  Handle low memory when allocating frames.
  *

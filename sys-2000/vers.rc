@@ -29,7 +29,7 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,2,0,4
+ FILEVERSION 1,2,0,5
  PRODUCTVERSION 1,2,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
@@ -47,7 +47,7 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Picture Elements, Inc.\0"
             VALUE "FileDescription", "ISE device driver (Win2000)\0"
-            VALUE "FileVersion", "1, 2, 0, 4\0"
+            VALUE "FileVersion", "1, 2, 0, 5\0"
             VALUE "InternalName", "ISE\0"
             VALUE "LegalCopyright", "Copyright © 2001\0"
             VALUE "OriginalFilename", "ISE.SYS\0"
