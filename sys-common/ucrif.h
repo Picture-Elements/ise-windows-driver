@@ -311,7 +311,30 @@ struct ucrx_timeout_s {
 # define UCRX_REPLACE UCRX_(0,14)
 
 /*
+ * This DeviceIoControl returns an integer code that represents the
+ * major board type. The result is one of the following integer
+ * values:
+ *
+ *   UCRX_BOARD_TYPE_ISE
+ *      ISE/SSE board
+ *
+ *   UCRX_BOARD_TYPE_JSE
+ *      JSE board
+ *
+ * Note: This is not intended for general use. Instead, applications
+ * should use the ise_version results to identify the board type with
+ * more precision. The return type is an int.
+ */
+# define UCRX_BOARD_TYPE UCRX_(0,15)
+# define UCRX_BOARD_TYPE_INVAL (-1)
+# define UCRX_BOARD_TYPE_ISE   (0)
+# define UCRX_BOARD_TYPE_JSE   (1)
+
+/*
  * $Log$
+ * Revision 1.3  2004/08/02 23:45:49  steve
+ *  Add UCRX_BOARD_TYPE control
+ *
  * Revision 1.2  2002/03/26 03:13:08  steve
  *  Add REMOVE/REPLACE ioctl definitions.
  *

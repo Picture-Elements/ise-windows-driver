@@ -261,6 +261,29 @@ static NTSTATUS isex_set_trace(DEVICE_OBJECT*dev, IRP*irp)
       return STATUS_SUCCESS;
 }
 
+static NTSTATUS isex_board_type(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
+
+      if (stp->Parameters.DeviceIoControl.OutputBufferLength != sizeof(int)) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      *(int*)irp->AssociatedIrp.SystemBuffer = UCRX_BOARD_TYPE_ISE;
+
+      if (xsp->dev_ops == &jse_operations)
+	    *(int*)irp->AssociatedIrp.SystemBuffer = UCRX_BOARD_TYPE_JSE;
+
+      irp->IoStatus.Information = sizeof(int);
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
+}
+
 NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 {
       IO_STACK_LOCATION*iop = IoGetCurrentIrpStackLocation(irp);
@@ -284,6 +307,9 @@ NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 	  case UCRX_DIAGNOSE:
 	    return isex_diagnose(dev, irp);
+
+	  case UCRX_BOARD_TYPE:
+	    return isex_board_type(dev, irp);
 
       }
 
@@ -392,6 +418,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.12  2004/08/02 23:45:49  steve
+ *  Add UCRX_BOARD_TYPE control
+ *
  * Revision 1.11  2004/07/15 04:19:26  steve
  *  Extend to support JSE boards.
  *
