@@ -147,6 +147,9 @@ struct instance_t {
 	/* Cookie for allocating common memory. */
       DMA_ADAPTER*dma;
 
+	/* Mutex for multi-processor synchronization */
+      KSPIN_LOCK mutex;
+
 	/* The root table pointer for the device is saved here. Save
 	   the physical address and the kernel virtual address.*/
       PHYSICAL_ADDRESS rootl;
@@ -228,6 +231,7 @@ struct channel_t {
       KDPC read_timer_dpc;
 	/* This is the IRP that is waiting for a read. */
       IRP*volatile read_pending;
+      volatile unsigned read_pstate;
 
 	/* This is the table that represents the channel for the ISE
 	   board and the driver. */
@@ -287,6 +291,15 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.9  2001/09/28 18:09:53  steve
+ *  Create a per-device mutex to manage multi-processor access
+ *  to the instance object.
+ *
+ *  Fix some problems with timeout handling.
+ *
+ *  Add some diagnostic features for tracking down locking
+ *  or delay problems.
+ *
  * Revision 1.8  2001/09/06 22:53:56  steve
  *  Flush can be cancelled.
  *

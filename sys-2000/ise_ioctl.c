@@ -64,7 +64,11 @@ static void wait_for_write_ring(struct instance_t*xsp,
 				vcallback_t cancel,
 				ring_test_t tester)
 {
-      unsigned long mask = dev_mask_irqs(xsp);
+      KIRQL save_irql;
+      unsigned long mask;
+
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
+      mask = dev_mask_irqs(xsp);
 
       if (irp->Tail.Overlay.DriverContext[0] != 0) {
 	    printk("ise%u.%u: warning: DriverContext[0] overrun"
@@ -94,6 +98,7 @@ static void wait_for_write_ring(struct instance_t*xsp,
       IoSetCancelRoutine(irp, write_ring_cancel);
 
       dev_unmask_irqs(xsp, mask);
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
 }
 
 /*
@@ -751,6 +756,15 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.8  2001/09/28 18:09:53  steve
+ *  Create a per-device mutex to manage multi-processor access
+ *  to the instance object.
+ *
+ *  Fix some problems with timeout handling.
+ *
+ *  Add some diagnostic features for tracking down locking
+ *  or delay problems.
+ *
  * Revision 1.7  2001/09/07 03:01:53  steve
  *  Actually pass the frames to the hardware.
  *

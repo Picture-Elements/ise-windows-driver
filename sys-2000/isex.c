@@ -21,6 +21,7 @@ static const wchar_t dosname[] = L"\\DosDevices\\ISEX";
 
 static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 {
+      KIRQL save_irql;
       struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
 
 	/* Cannot restart the board if there are any channels open. */
@@ -35,6 +36,7 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 	    printk("ucrx%u: restart ise%u\n", xsp->id, xsp->id);
 
 	/* Clear the table pointers and disable interrupts. */
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
       dev_init_hardware(xsp);
       dev_mask_irqs(xsp);
 
@@ -55,6 +57,7 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 	/* Make sure the table pointers are still clear, and re-enable
 	   the interrupts. */
       dev_init_hardware(xsp);
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -148,13 +151,16 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 			       xpd->channel, xpd->table->magic,
 			       xpd->table->self);
 
-			printk("ise%u.%u: OUT "
-			       "(first=%u, next=%u, off=%u) "
-			       "IN (first=%u, next=%u)\n", xsp->id,
+			printk("ise%u.%u: OUT (first=%u, next=%u, off=%u) "
+			       "IN (first=%u, next=%u, off=%u)\n", xsp->id,
 			       xpd->channel, xpd->table->first_out_idx,
 			       xpd->table->next_out_idx, xpd->out_off,
 			       xpd->table->first_in_idx,
-			       xpd->table->next_in_idx);
+			       xpd->table->next_in_idx, xpd->in_off);
+
+			printk("ise%u.%u: read_pstate=%u read_timeout=%u\n",
+			       xsp->id, xpd->channel,
+			       xpd->read_pstate, xpd->read_timeout);
 
 			for (idx = 0 ;  idx < CHANNEL_OBUFS ;  idx += 1)
 			      printk("ise%u.%u: obuf %u: "
@@ -412,6 +418,15 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.7  2001/09/28 18:09:54  steve
+ *  Create a per-device mutex to manage multi-processor access
+ *  to the instance object.
+ *
+ *  Fix some problems with timeout handling.
+ *
+ *  Add some diagnostic features for tracking down locking
+ *  or delay problems.
+ *
  * Revision 1.6  2001/09/07 02:59:50  steve
  *  More diagnose details
  *

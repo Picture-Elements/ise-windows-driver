@@ -33,6 +33,7 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp)
 
       xsp->pending_read_count.scheduled += 1;
       xpd->read_pending = irp;
+      xpd->read_pstate = 100; /* state for debugging */
 
 	/* Steal the ByteOffset member as a progress pointer for the
 	   actual read operation. This allows me to span function
@@ -61,24 +62,44 @@ static void read_cancel(DEVICE_OBJECT*dev, IRP*irp);
  */
 static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
 {
+      NTSTATUS status;
+      KIRQL save_irql;
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
       struct channel_t*xpd = get_channel(irp);
 
-      unsigned long mask = dev_mask_irqs(xsp);
+      unsigned long mask;
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
+      mask = dev_mask_irqs(xsp);
+
+      if (xpd->read_pending != irp)
+	    printk("ise%u.%u: IRP mismatch is read_2?\n", xsp->id,
+		   xpd->channel);
+
+      xpd->read_pstate = 200; /* read state for debugging. */
+
+      if (debug_flag & UCR_TRACE_CHAN)
+	    printk("ise%u.%u: read flush done, checking for data.\n",
+		   xsp->id, xpd->channel);
 
 	/* If I can't read *any* data, then wait until I can. */
       if (CHANNEL_IN_EMPTY(xpd)) {
+
+	    xpd->read_pstate = 201; /* read state for debugging. */
 
 	      /* If the read_timeout is 0, then this is a poll. Return
 		 a byte count of 0 and complete the request. */
 	    if (xpd->read_timeout == 0) {
 		  dev_unmask_irqs(xsp, mask);
+		  KeReleaseSpinLock(&xsp->mutex, save_irql);
 		  xpd->read_pending = 0;
+		  xpd->read_pstate = 0;
 		  irp->IoStatus.Status = STATUS_SUCCESS;
 		  irp->IoStatus.Information = 0;
 		  IoCompleteRequest(irp, IO_NO_INCREMENT);
 		  return STATUS_SUCCESS;
 	    }
+
+	    xpd->read_pstate = 202; /* read state for debugging. */
 
 	    irp->Tail.Overlay.DriverContext[0] = &dev_read_3;
 	    ExInterlockedInsertTailList(&xsp->pending_read_irps,
@@ -87,10 +108,14 @@ static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
 	    IoMarkIrpPending(irp);
 	    irp->IoStatus.Status = STATUS_PENDING;
 
+	    xpd->read_pstate = 203; /* read state for debugging. */
+
 	      /* If there is a timeout, then set the timeout value and
 		 start the timer. */
 	    if (xpd->read_timeout > 0) {
 		  LARGE_INTEGER due_time;
+		  xpd->read_pstate = 204; /* read state for debugging. */
+
 		  due_time = RtlEnlargedIntegerMultiply(
 				    xpd->read_timeout, 10000);
 		  KeSetTimer(&xpd->read_timer,
@@ -100,12 +125,17 @@ static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
 
 	    IoSetCancelRoutine(irp, &read_cancel);
 	    dev_unmask_irqs(xsp, mask);
+	    KeReleaseSpinLock(&xsp->mutex, save_irql);
 	    return STATUS_PENDING;
       }
 
-      dev_unmask_irqs(xsp, mask);
+      xpd->read_pstate = 205; /* read state for debugging. */
 
-      return dev_read_3(xsp, irp);
+      status = dev_read_3(xsp, irp);
+      dev_unmask_irqs(xsp, mask);
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
+
+      return status;
 }
 
 /*
@@ -118,7 +148,8 @@ static NTSTATUS dev_read_2(struct instance_t*xsp, IRP*irp)
  * No matter. However we got here, we are going to complete the IRP
  * with a success, and some amount of data.
  *
- * irqs for the board may or may not be blocked by the caller.
+ * irqs for the board should be blocked by the caller, so we do not
+ * block irqs or grab the mutex.
  */
 static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp)
 {
@@ -126,6 +157,12 @@ static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp)
       struct channel_t*xpd = get_channel(irp);
       unsigned char*bytes;
       unsigned long count, tcount;
+
+      if (debug_flag & UCR_TRACE_CHAN)
+	    printk("ise%u.%u: read check done, performing read.\n",
+		   xsp->id, xpd->channel);
+
+      xpd->read_pstate = 300; /* read state for debugging */
 
       bytes  = irp->AssociatedIrp.SystemBuffer;
       count  = stp->Parameters.Read.Length;
@@ -179,6 +216,7 @@ static NTSTATUS dev_read_3(struct instance_t*xsp, IRP*irp)
       xsp->pending_read_count.complete += 1;
 
       xpd->read_pending = 0;
+      xpd->read_pstate = 0;
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = stp->Parameters.Read.ByteOffset.LowPart;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -196,6 +234,11 @@ void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 
       LIST_ENTRY tmp;
       struct instance_t*xsp = (struct instance_t*)ctx;
+
+
+      KeAcquireSpinLockAtDpcLevel(&xsp->mutex);
+      mask = dev_mask_irqs(xsp);
+
 
 	/* Move the irps from the pending_write_irps list to a tmp
 	   list. Acquire the lock once and run through them with
@@ -229,8 +272,6 @@ void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	   Watch out that this IRP may have been cancelled. If that is
 	   the case, do *not* requeue it, just ignore it. */
 
-      mask = dev_mask_irqs(xsp);
-
       while (! IsListEmpty(&tmp)) {
 	    LIST_ENTRY*qe;
 	    IRP*irp;
@@ -251,16 +292,23 @@ void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	    IoSetCancelRoutine(irp, 0);
 	    if (irp->Cancel)
 		  continue;
-
+#if 0
 	    if (KeCancelTimer(&xpd->read_timer))
 		  continue;
-
+#else
+	    KeCancelTimer(&xpd->read_timer);
+#endif
+	      /* In reality, this only calls read_3. That function
+		 does not call dev_mask_irqs, so we can leave the irqs
+		 mask in our iteration. */
 	    call_fun = (callback_t) irp->Tail.Overlay.DriverContext[0];
 	    irp->Tail.Overlay.DriverContext[0] = 0;
 	    (*call_fun) (xsp, irp);
       }
 
+
       dev_unmask_irqs(xsp, mask);
+      KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 
       KeReleaseSpinLockFromDpcLevel(&xsp->pending_read_sync);
 }
@@ -286,13 +334,19 @@ static void read_cancel(DEVICE_OBJECT*dev, IRP*irp)
 
 void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 {
-      KIRQL irql;
+      KIRQL irql, save_irql;
       struct channel_t*xpd = (struct channel_t*)ctx;
       struct instance_t*xsp = xpd->xsp;
-      IRP*irp = xpd->read_pending;
+      IRP*irp;
 
-      if (irp == 0)
+	/* This protects the main-line reads from me. */
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
+
+      irp = xpd->read_pending;
+      if (irp == 0) {
+	    KeReleaseSpinLock(&xsp->mutex, save_irql);
 	    return;
+      }
 
 	/* mark this as no longer pending. */
       xpd->read_pending = 0;
@@ -302,6 +356,8 @@ void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2)
       RemoveEntryList(&irp->Tail.Overlay.ListEntry);
       IoSetCancelRoutine(irp, 0);
       KeReleaseSpinLock(&xsp->pending_read_sync, irql);
+
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
 
       if (irp->Cancel)
 	    return;
@@ -325,6 +381,15 @@ static void dev_read_flush_cancel(struct instance_t*xsp, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.6  2001/09/28 18:09:53  steve
+ *  Create a per-device mutex to manage multi-processor access
+ *  to the instance object.
+ *
+ *  Fix some problems with timeout handling.
+ *
+ *  Add some diagnostic features for tracking down locking
+ *  or delay problems.
+ *
  * Revision 1.5  2001/09/06 22:53:56  steve
  *  Flush can be cancelled.
  *

@@ -84,7 +84,11 @@ void root_to_board(struct instance_t*xsp, IRP*irp,
 		   struct root_table*root, PHYSICAL_ADDRESS rootl,
 		   callback_t fun)
 {
-      unsigned long mask = dev_mask_irqs(xsp);
+      KIRQL save_irql;
+      unsigned long mask;
+
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
+      mask = dev_mask_irqs(xsp);
 
       if (xsp->root_callback != 0) {
 	    printk("ise%u: warning: root_callback overrun.\n", xsp->id);
@@ -108,6 +112,7 @@ void root_to_board(struct instance_t*xsp, IRP*irp,
       dev_set_bells(xsp, ROOT_TABLE_BELLMASK);
 
       dev_unmask_irqs(xsp, mask);
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
 }
 
 NTSTATUS complete_success(struct instance_t*xsp, IRP*irp)
@@ -519,6 +524,8 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       KeInitializeSpinLock(&xsp->pending_read_sync);
       KeInitializeSpinLock(&xsp->pending_write_sync);
 
+      KeInitializeSpinLock(&xsp->mutex);
+
 	/* Create a DMA_ADAPTER object for use while allocating buffers. */
       { DEVICE_DESCRIPTION desc;
         unsigned long nmap = 0;
@@ -722,6 +729,15 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.7  2001/09/28 18:09:53  steve
+ *  Create a per-device mutex to manage multi-processor access
+ *  to the instance object.
+ *
+ *  Fix some problems with timeout handling.
+ *
+ *  Add some diagnostic features for tracking down locking
+ *  or delay problems.
+ *
  * Revision 1.6  2001/09/07 03:00:32  steve
  *  The ise device is not exclusive, so far as Windows is concerned.
  *
