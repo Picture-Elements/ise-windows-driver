@@ -47,7 +47,7 @@ static int ucrx_reset_board(struct Instance*xsp)
 {
       int rc;
       unsigned char state;
-      unsigned tmp[5];
+      unsigned tmp[6];
 
 	/* On the ISE board, the I960Rx ALWAYS places the bridge at
 	   the function unit one below the CPU. This gives me a nifty
@@ -78,6 +78,7 @@ static int ucrx_reset_board(struct Instance*xsp)
 	    pcibios_read_config_dword(xsp->bus, xsp->dfn, 0x10, &tmp[2]);
 	    pcibios_read_config_dword(xsp->bus, xsp->dfn, 0x30, &tmp[3]);
 	    pcibios_read_config_dword(xsp->bus, xsp->dfn, 0x3c, &tmp[4]);
+	    pcibios_read_config_dword(xsp->bus, xsp->dfn, 0x40, &tmp[5]);
 
 	      /* Send the reset command to the board. This goes to the
 		 BRIDGE part of the device, which can control the i960
@@ -85,6 +86,7 @@ static int ucrx_reset_board(struct Instance*xsp)
 	    pcibios_write_config_byte(xsp->bus, bdfn, 0x40, 0x20);
 
 	      /* Restore the saved configuration registers. */
+	    pcibios_write_config_dword(xsp->bus, xsp->dfn, 0x40, tmp[5]);
 	    pcibios_write_config_dword(xsp->bus, xsp->dfn, 0x04, tmp[0]);
 	    pcibios_write_config_dword(xsp->bus, xsp->dfn, 0x0c, tmp[1]);
 	    pcibios_write_config_dword(xsp->bus, xsp->dfn, 0x10, tmp[2]);
@@ -304,6 +306,9 @@ int ucrx_ioctl(struct Instance*xsp, unsigned int cmd, unsigned long arg)
 
 /*
  * $Log$
+ * Revision 1.2  2002/06/28 22:13:23  steve
+ *  Reset that preserves bar0 region size.
+ *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
  *
