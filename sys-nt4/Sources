@@ -3,7 +3,7 @@ TARGETNAME=ise
 TARGETPATH=.
 TARGETTYPE=DRIVER
 TARGETLIBS=
-INCLUDES=.
+INCLUDES=. ..\sys-common
 SOURCES=winnt.c winntcons.c winntdev.c winntdvx.c winntframe.c winntsync.c ucr.c ucrx.c bios32.c vers.rc
 
 NTTARGETFILE0=ntmsg.h

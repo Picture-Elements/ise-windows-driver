@@ -110,8 +110,7 @@ void ucr_clear_instance(struct Instance*xsp)
  * specified id. If no structures match, return 0. The result comes
  * from the instance structure, which has a table of opened channels.
  */
-static struct ChannelData* channel_by_id(struct Instance*xsp,
-					 unsigned short id)
+struct ChannelData* channel_by_id(struct Instance*xsp, unsigned short id)
 {
       struct ChannelData*cp;
 
@@ -480,12 +479,6 @@ static long do_sync(struct Instance*xsp,
       return 0;
 }
 
-static long ucr_channel_nread(struct Instance*xsp, struct ChannelData*xpd)
-{
-      printk("XXXX NREAD not yet implemented.\n");
-      return -ENOSYS;
-}
-
 /*
  * When a new file is opened, create a ChannelData structure to be
  * associated with that descriptor. The file by default gets channel
@@ -511,8 +504,14 @@ int ucr_open(struct Instance*xsp, struct ChannelData*xpd)
 	    return -EBUSY;
 
       xpd->channel = 0;
+      xpd->xsp = xsp;
       xpd->in_off = 0;
       xpd->out_off = 0;
+
+      xpd->read_timeout = UCRX_TIMEOUT_OFF;
+      xpd->read_timeout_flag = 0;
+	/*xpd->read_timing = 0;*/
+
       xpd->table = alloc_memory(sizeof(*xpd->table));
 
       xpd->table->magic = CHANNEL_TABLE_MAGIC;
@@ -654,6 +653,11 @@ long ucr_read(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
 		  if (tcount < count)
 			break;
 
+		    /* If this re-run is caused by a timeout,
+		       don't block. */
+		  if (xpd->read_timeout_flag)
+			goto read_timeout;
+
 		    /* I'm about to block. If the caller doesn't want
 		       that, then break from the read loop here. */
 		  if (!block_flag)
@@ -665,13 +669,12 @@ long ucr_read(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
 		  if (flush_channel(xsp, xpd, ccp) == -EINTR)
 			return -EINTR;
 
-		    /* Finally, block. If I exit and an interrupted,
-		       jump out of the read. Note that this function
-		       will recheck for the presence of read data in
-		       an interrupt safe way. */
+		    /* Finally, block. In truth, this marks the IRP
+		       pending and returns -EINTR. The ucr_read will
+		       be called again in the future to continue the
+		       read operation. */
 		  if (wait_for_read_data(xsp, xpd, ccp) == -EINTR)
 			return -EINTR;
-
 	    }
 
 	    buf = xpd->in[xpd->table->first_in_idx];
@@ -703,6 +706,9 @@ long ucr_read(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
 		  dev_set_bells(xsp->dev, CHANGE_BELLMASK);
 	    }
       }
+
+ read_timeout:
+      xpd->read_timeout_flag = 0;
 
 	/* Calculate the return value. */
       count = count - tcount;
@@ -846,9 +852,6 @@ int ucr_ioctl(struct Instance*xsp, struct ChannelData*xpd, struct ccp_t*ccp,
 		return -ENOSYS;
 	  }
 
-	  case UCR_NREAD: {
-		return ucr_channel_nread(xsp, xpd);
-	  }
       }
 
       return -ENOTTY;
@@ -879,6 +882,9 @@ int ucr_irq(struct Instance*xsp)
 
 /*
  * $Log$
+ * Revision 1.3  2001/07/12 20:31:05  steve
+ *  Support UCRX_TIMEOUT_FORCE
+ *
  * Revision 1.2  2001/04/03 01:56:05  steve
  *  Simplify the code path for pending operations, and
  *  use buffered I/O instead of direct.

@@ -122,15 +122,11 @@ struct ccp_t {
       BOOLEAN pend_flag;
 };
 
-#define OS_CHAN_MEMBERS \
-    unsigned long block_flag; \
-    struct ccp_t ccp_read, ccp_write, ccp_ioctl; \
-    struct counters cnt;
 
 /* Take the device_fn of the i960RP ATU and generate the matching
    device_fn for the bridge. This works by subtracting 1 from the
    function unit. */
-#define i960rp_to_bridge(x) ((x)-0x20)
+#define i960rp_to_bridge(x) ((unsigned char)((x)-0x20))
 
 /* This is the type code for the device object that represents the
    physical board. Instance structures are connected to these devices. */
@@ -178,6 +174,9 @@ extern void ucr_deinit_nt_frame_pool();
 
 /*
  * $Log$
+ * Revision 1.3  2001/07/12 20:31:05  steve
+ *  Support UCRX_TIMEOUT_FORCE
+ *
  * Revision 1.2  2001/04/03 01:56:05  steve
  *  Simplify the code path for pending operations, and
  *  use buffered I/O instead of direct.

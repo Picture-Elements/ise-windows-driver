@@ -130,10 +130,12 @@ struct channel_table {
  * created in the xxopen and released in the xxrelease.
  */
 struct ChannelData {
-#ifdef OS_CHAN_MEMBERS
-      OS_CHAN_MEMBERS
-#endif
       unsigned short channel;
+      struct Instance*xsp;
+
+      unsigned long block_flag;
+      struct ccp_t ccp_read, ccp_write, ccp_ioctl;
+      struct counters cnt;
 
 	/* This is the address of the table for the channel, along
 	   with its physical address. This structure is used to
@@ -147,7 +149,11 @@ struct ChannelData {
 
       unsigned in_off;
       unsigned out_off;
-      struct timer_list out_timer;
+
+      long read_timeout;
+	/*struct timer_list read_timer;*/
+      int read_timeout_flag;
+	/*int read_timing;*/
 
       struct ChannelData *next, *prev;
 };
@@ -194,6 +200,9 @@ struct Instance {
 	   structure of their own. */
       struct ChannelData *channels;
 };
+
+extern struct ChannelData* channel_by_id(struct Instance*xsp,
+					 unsigned short id);
 
 /*
  * This function atomically releases the interrupts (with the mask
@@ -259,37 +268,15 @@ extern void ucr_clear_instance(struct Instance*xsp);
 
 /*
  * $Log$
+ * Revision 1.3  2001/07/12 20:31:05  steve
+ *  Support UCRX_TIMEOUT_FORCE
+ *
  * Revision 1.2  2001/04/03 01:56:05  steve
  *  Simplify the code path for pending operations, and
  *  use buffered I/O instead of direct.
  *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
- *
- * Revision 1.8  2000/06/26 22:07:45  steve
- *  Close some channel races.
- *
- * Revision 1.7  1999/07/15 16:37:37  steve
- *  isolate read and write activities under NT.
- *
- * Revision 1.6  1999/05/08 02:11:17  steve
- *  Manipulate the bus master enable bit.
- *
- * Revision 1.5  1999/04/02 00:27:45  steve
- *  IRQ sharing fix for NT.
- *
- * Revision 1.4  1998/12/02 00:52:30  steve
- *  Improved frame handling and debugging.
- *
- * Revision 1.3  1998/05/29 20:57:12  steve
- *  build up frame table under NT.
- *
- * Revision 1.2  1998/05/28 22:53:02  steve
- *  NT port.
- *
- * Revision 1.1  1998/05/26 16:16:35  steve
- *  New channel protocol
- *
  */
 
 

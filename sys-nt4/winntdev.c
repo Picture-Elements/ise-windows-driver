@@ -180,11 +180,15 @@ NTSTATUS dev_read(DEVICE_OBJECT*dev, IRP*irp, BOOLEAN retry_flag)
 	   0 instead of -EINTR if there is no data. */
       flag = (xpd->block_flag & 1) ? 0 : 1;
 
+	/* If this is an actual call from outside the kernel, then
+	   reset the state of the operation, mark counters, and get
+	   ready for action. */
       if (! retry_flag) {
 	    xsp->cnt.read += 1;
 	    xsp->cnt.read_pend += 1;
 	    xpd->cnt.read += 1;
 	    xpd->cnt.read_pend += 1;
+	    xpd->read_timeout_flag = 0;
 	    stp->Parameters.Read.ByteOffset.LowPart = 0;
 	    ccp->pend_flag = FALSE;
       }
@@ -825,57 +829,14 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 
 /*
  * $Log$
+ * Revision 1.3  2001/07/12 20:31:05  steve
+ *  Support UCRX_TIMEOUT_FORCE
+ *
  * Revision 1.2  2001/04/03 01:56:05  steve
  *  Simplify the code path for pending operations, and
  *  use buffered I/O instead of direct.
  *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
- *
- * Revision 1.15  1999/08/18 00:06:00  steve
- *  Fix SMP synchronization problem.
- *
- * Revision 1.14  1999/07/15 16:37:37  steve
- *  isolate read and write activities under NT.
- *
- * Revision 1.13  1999/07/15 02:11:12  steve
- *  Count pending IRPs.
- *
- * Revision 1.12  1999/05/08 02:11:17  steve
- *  Manipulate the bus master enable bit.
- *
- * Revision 1.11  1999/04/02 00:27:45  steve
- *  IRQ sharing fix for NT.
- *
- * Revision 1.10  1999/03/21 01:36:08  steve
- *  Fix synchronization of IoMarpIrpPending.
- *
- * Revision 1.9  1998/12/14 22:29:08  steve
- *  bootprom is not here anymore.
- *
- * Revision 1.8  1998/10/29 23:32:14  steve
- *  Report memory and IRQ usage.
- *
- * Revision 1.7  1998/09/23 23:12:58  steve
- *  Better detect diagnose broken interrupts.
- *
- * Revision 1.6  1998/07/11 20:46:39  steve
- *  Log HalTranslateBusAddress nonsense.
- *
- * Revision 1.5  1998/07/11 18:56:51  steve
- *  Frames for multiple devices.
- *
- * Revision 1.4  1998/07/10 22:54:23  steve
- *  Work around HalTranslateBusAddress bug.
- *
- * Revision 1.3  1998/05/30 18:59:23  steve
- *  Read retry gets offset right.
- *
- * Revision 1.2  1998/05/29 18:11:22  steve
- *  Proper cancel/abort behavior for NT.
- *
- * Revision 1.1  1998/05/28 22:53:02  steve
- *  NT port.
- *
  */
 

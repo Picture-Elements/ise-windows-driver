@@ -95,7 +95,49 @@ void devx_diag1(struct Instance*xsp)
       }
 }
 
-NTSTATUS devx_ioctl(DEVICE_OBJECT*dev, IRP*irp)
+static void do_ucrx_timeout(DEVICE_OBJECT*dev, IRP*irp)
+{
+      struct Instance*xsp = *((struct Instance**)dev->DeviceExtension);
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+
+      struct ucrx_timeout_s*ts = (struct ucrx_timeout_s*)
+	    irp->AssociatedIrp.SystemBuffer;
+
+      struct ChannelData*xpd = channel_by_id(xsp, ts->id);
+      if (xpd == 0) {
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    return;
+      }
+
+      if (ts->read_timeout >= 0) {
+	    xpd->read_timeout = ts->read_timeout;
+
+      } else switch (ts->read_timeout) {
+
+	  case UCRX_TIMEOUT_OFF:
+	    xpd->read_timeout = -1;
+	    break;
+
+	  case UCRX_TIMEOUT_FORCE:
+	    xpd->read_timeout_flag = 1;
+	    KeInsertQueueDpc(&xsp->pending_io_dpc, 0, 0);
+	    break;
+
+	  default:
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    return;
+      }
+
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      irp->IoStatus.Information = 0;
+}
+
+/*
+ * This passes the IOCTL to common code.
+ */
+static void do_standard_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 {
       long rc;
       unsigned long cmd, arg;
@@ -103,7 +145,8 @@ NTSTATUS devx_ioctl(DEVICE_OBJECT*dev, IRP*irp)
       IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
 
       cmd = stp->Parameters.DeviceIoControl.IoControlCode;
-      if (stp->Parameters.DeviceIoControl.InputBufferLength == sizeof arg)
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength==sizeof arg)
 	    arg = *(unsigned long*)irp->AssociatedIrp.SystemBuffer;
       else
 	    arg = 0;
@@ -120,6 +163,22 @@ NTSTATUS devx_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 	    irp->IoStatus.Information = sizeof rc;
       } else {
 	    irp->IoStatus.Information = 0;
+      }
+
+}
+
+NTSTATUS devx_ioctl(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      unsigned long cmd = stp->Parameters.DeviceIoControl.IoControlCode;
+
+      switch (cmd) {
+	  case UCRX_TIMEOUT:
+	    do_ucrx_timeout(dev, irp);
+	    break;
+	  default:
+	    do_standard_ioctl(dev, irp);
+	    break;
       }
 
       IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -220,6 +279,9 @@ NTSTATUS create_devx(DRIVER_OBJECT*drv, struct Instance*xsp)
 
 /*
  * $Log$
+ * Revision 1.2  2001/07/12 20:31:05  steve
+ *  Support UCRX_TIMEOUT_FORCE
+ *
  * Revision 1.1  2001/03/05 20:11:40  steve
  *  Add NT4 driver to ISE source tree.
  *
