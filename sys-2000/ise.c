@@ -655,7 +655,7 @@ DEVICE_OBJECT*create_ise(DRIVER_OBJECT*drv, unsigned dev_no)
       RtlAppendUnicodeStringToString(&dev_str, &tmp_str);
 
       status = IoCreateDevice(drv, sizeof(struct instance_t), &dev_str,
-			      FILE_DEVICE_ISE, 0, TRUE, &fdo);
+			      FILE_DEVICE_ISE, 0, FALSE, &fdo);
 
       if (status != STATUS_SUCCESS)
 	    return 0;
@@ -722,6 +722,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.6  2001/09/07 03:00:32  steve
+ *  The ise device is not exclusive, so far as Windows is concerned.
+ *
  * Revision 1.5  2001/09/06 18:28:43  steve
  *  Read timeouts.
  *
