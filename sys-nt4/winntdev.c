@@ -691,9 +691,8 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 	/* Now get ALL the PCI configuration space information for the
 	   device. Use this to figure out stuff about the device that
 	   is needed for the later I/O operations. */
-      rc = HalGetBusData(PCIConfiguration, bus_no, slot, &config,
-			 sizeof config);
-      if (rc != sizeof config) return STATUS_UNSUCCESSFUL;
+      rc = HalGetBusData(PCIConfiguration, bus_no, slot, &config, 0x40);
+      if (rc != 0x40) return STATUS_UNSUCCESSFUL;
 
 
 	/* Make the kernel device name (\Device\ise0) from the prefix
@@ -834,6 +833,15 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 	    }
       }
 
+	/* Turn on bus mastering for the device. */
+      config.Command |= PCI_ENABLE_MEMORY_SPACE;
+      rc = HalSetBusData(PCIConfiguration, bus_no, slot, &config, 8);
+
+      dev_init_hardware(xsp->dev);
+
+      config.Command |= PCI_ENABLE_MEMORY_SPACE|PCI_ENABLE_BUS_MASTER;
+      rc = HalSetBusData(PCIConfiguration, bus_no, slot, &config, 8);
+
 	/* Connect the interrupt to the interrupt handler. */
       status = IoConnectInterrupt(&xsp->irq, xxirq, dev, 0, ivec,
 				  xsp->irql, xsp->irql, LevelSensitive,
@@ -850,10 +858,6 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 	    break;
       }
 
-	/* Turn on bus mastering for the device. */
-      config.Command |= PCI_ENABLE_MEMORY_SPACE|PCI_ENABLE_BUS_MASTER;
-      rc = HalSetBusData(PCIConfiguration, bus_no, slot, &config, 8);
-
 	/* Finally, create a matchine control device. */
       create_devx(drv, xsp);
 
@@ -863,6 +867,9 @@ NTSTATUS create_device(DRIVER_OBJECT*drv, unsigned bus_no,
 
 /*
  * $Log$
+ * Revision 1.6  2002/06/28 22:48:26  steve
+ *  More careful startup probing of the config space.
+ *
  * Revision 1.5  2001/08/14 22:25:30  steve
  *  Add SseBase device
  *
