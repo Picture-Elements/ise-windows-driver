@@ -293,15 +293,12 @@ void pending_read_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 		  continue;
 	    }
 
+	    KeCancelTimer(&xpd->read_timer);
+
 	    IoSetCancelRoutine(irp, 0);
 	    if (irp->Cancel)
 		  continue;
-#if 0
-	    if (KeCancelTimer(&xpd->read_timer))
-		  continue;
-#else
-	    KeCancelTimer(&xpd->read_timer);
-#endif
+
 	      /* In reality, this only calls read_3. That function
 		 does not call dev_mask_irqs, so we can leave the irqs
 		 mask in our iteration. */
@@ -324,8 +321,12 @@ static void read_cancel(DEVICE_OBJECT*dev, IRP*irp)
       struct channel_t*xpd = get_channel(irp);
 
       KeAcquireSpinLock(&xsp->pending_read_sync, &irql);
+
       RemoveEntryList(&irp->Tail.Overlay.ListEntry);
       xsp->pending_read_count.cancelled += 1;
+
+      KeCancelTimer(&xpd->read_timer);
+
       KeReleaseSpinLock(&xsp->pending_read_sync, irql);
 
       IoReleaseCancelSpinLock(irp->CancelIrql);
@@ -385,6 +386,9 @@ static void dev_read_flush_cancel(struct instance_t*xsp, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.8  2001/10/01 22:48:20  steve
+ *  Cancel timers in cancel routines.
+ *
  * Revision 1.7  2001/09/28 20:34:08  steve
  *  Fix dangling cancel routines.
  *

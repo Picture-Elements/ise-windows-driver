@@ -303,6 +303,9 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 		   xsp->id, xpd->channel);
       }
 
+	/* This shouldn't be necessary, but is defensive. */
+      KeCancelTimer(&xpd->read_timer);
+
 	/* If this is the last channel for this process, then remove
 	   any frame mappings first. */
       { unsigned count = 0, fidx;
@@ -729,6 +732,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.8  2001/10/01 22:48:20  steve
+ *  Cancel timers in cancel routines.
+ *
  * Revision 1.7  2001/09/28 18:09:53  steve
  *  Create a per-device mutex to manage multi-processor access
  *  to the instance object.
