@@ -74,6 +74,29 @@ void devx_diag1(struct Instance*xsp)
 		   xsp->number);
       }
 
+      printk("ise%u: root_table = (base=%x resp=%x)\n", xsp->number,
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x10)),
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x18)));
+
+      printk("ise%u: OIMR=%x, OISR=%x, ODR=%x\n", xsp->number,
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x34)),
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x30)),
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x2c)));
+
+      printk("ise%u: IIMR=%x, IISR=%x, IDR=%x\n", xsp->number,
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x28)),
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x24)),
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x20)));
+
+      printk("ise%u: OMR0=%x, OMR1=%x\n", xsp->number,
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x18)),
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x1c)));
+
+      printk("ise%u: IMR0=%x, IMR1=%x\n", xsp->number,
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x10)),
+	     READ_REGISTER_ULONG((ULONG*)((char*)xsp->dev + 0x14)));
+
+
       if (xsp->channels) {
 	    struct ChannelData*xpd = xsp->channels;
 	    printk(DEVICE_NAME "%u: Per Channel information...\n",
@@ -324,6 +347,9 @@ NTSTATUS create_devx(DRIVER_OBJECT*drv, struct Instance*xsp)
 
 /*
  * $Log$
+ * Revision 1.4  2002/06/28 22:48:53  steve
+ *  diag1 dump of all the reigsters.
+ *
  * Revision 1.3  2001/07/12 22:49:42  steve
  *  Add support for UCRX_RESTART_BOARD, and
  *  support read timeouts.
