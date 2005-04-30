@@ -88,7 +88,7 @@ extern NTSTATUS isex_run_program(DEVICE_OBJECT*dev, IRP*irp);
 struct root_table*duplicate_root(struct instance_t*xsp, PHYSICAL_ADDRESS*ptrl);
 extern NTSTATUS root_to_board(struct instance_t*xsp, IRP*irp,
 			      struct root_table*root, PHYSICAL_ADDRESS rootl,
-			      callback_t fun);
+			      callback_t fun, callback_t timeout_fun);
 
 extern NTSTATUS flush_channel(struct instance_t*xsp, IRP*irp,
 			      callback_t callback,
@@ -132,6 +132,8 @@ struct instance_t {
       unsigned id;
 	/* This is the device object that the PnP beast creates. */
       DEVICE_OBJECT*pdo;
+	/* This is the device object for the board. */
+      DEVICE_OBJECT*fdo;
 	/* This is used to keep track of the fdo in the dev stack */
       DEVICE_OBJECT*next_dev;
 	/* This is the device object for the isex node. */
@@ -175,6 +177,11 @@ struct instance_t {
       struct root_table*root2;
       IRP*root_irp;
       callback_t root_callback;
+
+	/* Root table manipulations take limited time. */
+      KTIMER root_timer;
+      KDPC root_timer_dpc;
+      callback_t root_timeout_callback;
 
 
 	/* Manage IRPs blocked on write space with these members. The
@@ -319,6 +326,9 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.13  2005/04/30 03:00:43  steve
+ *  Put timeout on root-to-board operations.
+ *
  * Revision 1.12  2004/07/15 04:19:26  steve
  *  Extend to support JSE boards.
  *

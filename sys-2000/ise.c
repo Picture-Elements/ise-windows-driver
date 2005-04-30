@@ -149,7 +149,7 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 NTSTATUS root_to_board(struct instance_t*xsp, IRP*irp,
 		   struct root_table*root, PHYSICAL_ADDRESS rootl,
-		   callback_t fun)
+		   callback_t fun, callback_t timeout_fun)
 {
       KIRQL save_irql;
       unsigned long mask;
@@ -167,10 +167,16 @@ NTSTATUS root_to_board(struct instance_t*xsp, IRP*irp,
       xsp->rootl2 = rootl;
       xsp->root_irp = irp;
       xsp->root_callback = fun;
+      xsp->root_timeout_callback = timeout_fun;
       IoMarkIrpPending(irp);
       irp->IoStatus.Status = STATUS_PENDING;
 
-
+	/* If the timeout is enabled, then set a fixed timeout of 2
+	   seconds for waiting for the root table. */
+      KeSetTimer(&xsp->root_timer,
+		 RtlConvertLongToLargeInteger(-4000000 * 10),
+		 &xsp->root_timer_dpc);
+		       
 	/* Make sure the resp register is different from what I'm
 	   about to write into the base register, so that I can
 	   properly wait for the resp to change. */
@@ -195,14 +201,23 @@ NTSTATUS complete_success(struct instance_t*xsp, IRP*irp)
       return STATUS_SUCCESS;
 }
 
+/*
+ * This function actually implements both the root_to_board DPC and
+ * the root_timer DPC. The arg1 is a flag that is true if this is a
+ * timeout.
+ */
 static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 {
       struct instance_t*xsp = (struct instance_t*)ctx;
       IRP*irp;
 
+      int timeout_flag = (arg1 != 0);
+
       KeAcquireSpinLockAtDpcLevel(&xsp->mutex);
 
       irp = xsp->root_irp;
+
+      KeCancelTimer(&xsp->root_timer);
 
 	/* Detect possible spurious DPC calls. Maybe there is no IRP
 	   waiting, or maybe the ISE board is not yet finished the
@@ -210,6 +225,30 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
       if (irp == 0) {
 	    KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 	    return;
+      }
+
+      if (timeout_flag) {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
+	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_ROOT_TIMEOUT;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_SUCCESS;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 2*sizeof(ULONG);
+	    event->DumpData[0] = xsp->root2? xsp->root2->self : 0;
+	    event->DumpData[1] = dev_get_root_table_resp(xsp);
+	    IoWriteErrorLogEntry(event);
+
+	      /* The timeout expired, but this seems to be a special
+		 case that we are clearing the root table pointer. If
+		 the board is not responding, then *force* the response
+		 pointer to 0 and hope for the best. */
+	    if (xsp->root2 == 0) {
+		  dev_set_root_table_resp(xsp, 0);
+	    }
+
       }
 
       if (dev_get_root_table_resp(xsp) != (xsp->root2? xsp->root2->self : 0)) {
@@ -239,14 +278,26 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 
       xsp->root2 = 0;
 
-      { callback_t callback = xsp->root_callback;
-        xsp->root_callback = 0;
-	KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
-	(*callback)(xsp, irp);
+      if (timeout_flag && xsp->root_timeout_callback) {
+	    callback_t callback = xsp->root_timeout_callback;
+	    xsp->root_callback = 0;
+	    xsp->root_timeout_callback = 0;
+	    KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
+	    (*callback)(xsp, irp);
+      } else {
+	    callback_t callback = xsp->root_callback;
+	    xsp->root_callback = 0;
+	    xsp->root_timeout_callback = 0;
+	    KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
+	    (*callback)(xsp, irp);
       }
 }
 
 
+static void root_timer_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
+{
+      root_to_board_dpc(dpc, ctx, (void*)1, 0);
+}
 
 /*
  * This entry is in response to a CreateFile. We create a new channel
@@ -363,7 +414,7 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
         newroot->chan[0].magic = xpd->table->magic;
 	newroot->chan[0].ptr   = xpd->table->self;
 
-	rc = root_to_board(xsp, irp, newroot, newrootl, &complete_success);
+	rc = root_to_board(xsp, irp, newroot, newrootl, &complete_success, 0);
 	if (rc != STATUS_PENDING) {
 	      irp->IoStatus.Status = rc;
 	      printk("ise%u: error from root_to_board\n", xsp->id);
@@ -498,7 +549,7 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
       }
 
       { NTSTATUS rc;
-        rc = root_to_board(xsp, irp, newroot, newrootl, &dev_close_2);
+        rc = root_to_board(xsp, irp, newroot, newrootl, &dev_close_2, 0);
 	if (rc != STATUS_PENDING) {
 	      irp->IoStatus.Status = rc;
 	      irp->IoStatus.Information = 0;
@@ -542,7 +593,6 @@ static NTSTATUS dev_close_2(struct instance_t*xsp, IRP*irp)
       xpd->next = xsp->channel_standby_list;
       xsp->channel_standby_list = xpd;
       KeReleaseSpinLock(&xsp->mutex, save_irql);
-
 
       irp->IoStatus.Status = STATUS_SUCCESS;
       irp->IoStatus.Information = 0;
@@ -636,6 +686,8 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       CM_RESOURCE_LIST*res, *raw;
       PCI_COMMON_CONFIG pci;
       struct instance_t*xsp = (struct instance_t*)fdo->DeviceExtension;
+
+      xsp->fdo = fdo;
 
       printk("ise%u: pnp_start_ise\n", xsp->id);
 
@@ -763,8 +815,10 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       }
 
       KeInitializeDpc(&xsp->root_to_board_dpc, &root_to_board_dpc, xsp);
+      KeInitializeDpc(&xsp->root_timer_dpc,    &root_timer_dpc,    xsp);
       KeInitializeDpc(&xsp->pending_read_dpc,  &pending_read_dpc,  xsp);
       KeInitializeDpc(&xsp->pending_write_dpc, &pending_write_dpc, xsp);
+      KeInitializeTimer(&xsp->root_timer);
 
       InitializeListHead(&xsp->pending_read_irps);
       InitializeListHead(&xsp->pending_write_irps);
@@ -989,6 +1043,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.18  2005/04/30 03:00:43  steve
+ *  Put timeout on root-to-board operations.
+ *
  * Revision 1.17  2005/03/02 15:25:43  steve
  *  Better job of poisoning old roots, and activating new ones.
  *

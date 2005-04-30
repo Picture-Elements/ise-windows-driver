@@ -59,3 +59,27 @@ SymbolicName=ISE_DETECTED_JSE
 Language=English
 Detected JSE board
 .
+
+MessageId=7
+Facility=ISE
+Severity=Informational
+SymbolicName=ISE_TRACE_POINT
+Language=English
+Debug Trace Point
+.
+
+MessageId=8
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_ROOT_CALLBACK_OVERRUN
+Language=English
+Internal Driver error, root callback overrun.
+.
+
+MessageId=9
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_ROOT_TIMEOUT
+Language=English
+Timeout sending root table to the board.
+.

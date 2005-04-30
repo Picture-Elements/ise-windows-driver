@@ -446,7 +446,7 @@ static NTSTATUS dev_ioctl_channel_3(struct instance_t*xsp, IRP*irp)
       xpd->channel = (unsigned short)arg;
 
       { NTSTATUS rc;
-        rc = root_to_board(xsp, irp, newroot, newrootl, complete_success);
+        rc = root_to_board(xsp, irp, newroot, newrootl, complete_success, 0);
 	if (rc != STATUS_PENDING) {
 	      irp->IoStatus.Status = rc;
 	      irp->IoStatus.Information = 0;
@@ -528,7 +528,7 @@ static NTSTATUS dev_ioctl_make_frame(DEVICE_OBJECT*dev, IRP*irp)
       newroot->frame_table[fidx].magic = xsp->frame_tab[fidx]->magic;
 
       { NTSTATUS rc;
-        rc = root_to_board(xsp, irp, newroot, newrootl, make_frame_complete);
+        rc = root_to_board(xsp, irp, newroot, newrootl, make_frame_complete, 0);
 	if (rc != STATUS_PENDING) {
 	      irp->IoStatus.Status = rc;
 	      irp->IoStatus.Information = 0;
@@ -597,7 +597,7 @@ static NTSTATUS dev_ioctl_free_frame(DEVICE_OBJECT*dev, IRP*irp)
       newroot->frame_table[fidx].magic = 0;
 
       { NTSTATUS rc;
-        rc = root_to_board(xsp, irp, newroot, newrootl, free_frame_complete);
+        rc = root_to_board(xsp, irp, newroot, newrootl, free_frame_complete,0);
 	if (rc != STATUS_PENDING) {
 	      irp->IoStatus.Status = rc;
 	      irp->IoStatus.Information = 0;
@@ -850,6 +850,9 @@ NTSTATUS dev_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 
 /*
  * $Log$
+ * Revision 1.15  2005/04/30 03:00:43  steve
+ *  Put timeout on root-to-board operations.
+ *
  * Revision 1.14  2004/10/25 19:04:49  steve
  *  Snapshot 20041005: Some more error logging.
  *
