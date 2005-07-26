@@ -158,18 +158,25 @@ NTSTATUS root_to_board(struct instance_t*xsp, IRP*irp,
       mask = dev_mask_irqs(xsp);
 
       if (xsp->root_callback != 0) {
-	    printk("ise%u: warning: root_callback overrun.\n", xsp->id);
+	    printk("ise%u: warning: root_to_board is busy.\n", xsp->id);
+	    dev_unmask_irqs(xsp, mask);
+	    KeReleaseSpinLock(&xsp->mutex, save_irql);
+	    return STATUS_DEVICE_NOT_READY;
       }
 
 	/* Stash the pointers, the IRP and the callback into a standby
-	   area and mark the IRP pending. */
+	   area and mark the IRP pending. Note that the IRP is
+	   optional, as root table changes may be initiated without an
+	   IRP. All the other values are required. */
       xsp->root2 = root;
       xsp->rootl2 = rootl;
       xsp->root_irp = irp;
       xsp->root_callback = fun;
       xsp->root_timeout_callback = timeout_fun;
-      IoMarkIrpPending(irp);
-      irp->IoStatus.Status = STATUS_PENDING;
+      if (irp) {
+	    IoMarkIrpPending(irp);
+	    irp->IoStatus.Status = STATUS_PENDING;
+      }
 
 	/* If the timeout is enabled, then set a fixed timeout of 2
 	   seconds for waiting for the root table. */
@@ -222,8 +229,9 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	/* Detect possible spurious DPC calls. Maybe there is no IRP
 	   waiting, or maybe the ISE board is not yet finished the
 	   change. */
-      if (irp == 0) {
+      if (xsp->root_callback == 0) {
 	    KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
+	    printk("ise%u: Spurious root_to_board_dpc?\n", xsp->id);
 	    return;
       }
 
@@ -336,7 +344,6 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
 
       xpd->channel = 0;
       xpd->xsp = xsp;
-      xpd->proc = IoGetCurrentProcess();
 
 	/* Initialize members related to read timeouts. */
       xpd->read_timeout = UCRX_TIMEOUT_OFF;
@@ -452,25 +459,11 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
       PHYSICAL_ADDRESS newrootl;
       struct root_table*newroot = 0;
 
-      int channels_remaining_in_process = 0;
       int channels_remaining_in_table = 0;
-
-      if (xpd->proc != IoGetCurrentProcess()) {
-	    printk("ise%u.%u: close by wrong owner?!\n",
-		   xsp->id, xpd->channel);
-      }
+      int frames_remaining_in_table = 0;
 
 	/* This shouldn't be necessary, but is defensive. */
       KeCancelTimer(&xpd->read_timer);
-
-	/* Count the number of channels remaining. Count by scanning
-	   the circular list back around to self. */
-      { struct channel_t*cur;
-	for (cur = xpd->next ;  cur != xpd ;  cur = cur->next) {
-	      if (cur->proc == xpd->proc)
-		    channels_remaining_in_process += 1;
-	}
-      }
 
 	/* Count the number of channels remaning all together. This
 	   includes the channels held by other processes. We need this
@@ -485,52 +478,11 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 
 	/* If this is the last channel for this process, then remove
 	   any frame mappings first. */
-      if (channels_remaining_in_process == 0) {
-	    unsigned fidx;
-	    for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
-
-		  if (xsp->frame_map[fidx].base
-		      && (xsp->frame_map[fidx].proc == xpd->proc)) {
-			printk("ise%u.%u: unmap frame %u on final close.\n",
-			       xsp->id, xpd->channel, fidx);
-
-			{ IO_ERROR_LOG_PACKET*event;
-			  unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
-			  psize += 2*sizeof(ULONG);
-			  event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
-			  event->ErrorCode = ISE_FRAME_UNMAP_ON_CLOSE;
-			  event->UniqueErrorValue = 0;
-			  event->FinalStatus = STATUS_NO_MEMORY;
-			  event->MajorFunctionCode = IRP_MJ_CLOSE;
-			  event->IoControlCode = 0;
-			  event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
-			  event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
-			  event->DumpData[2] = fidx;
-			  IoWriteErrorLogEntry(event);
-			}
-
-			MmUnmapLockedPages(xsp->frame_map[fidx].base,
-					   xsp->frame_mdl[fidx]);
-
-			xsp->frame_map[fidx].proc = 0;
-			xsp->frame_map[fidx].base = 0;
-
-		  } else if (xsp->frame_map[fidx].base) {
-			IO_ERROR_LOG_PACKET*event;
-			unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
-			psize += 2*sizeof(ULONG);
-			event = IoAllocateErrorLogEntry(dev, (UCHAR)psize);
-			event->ErrorCode = ISE_FRAME_DANGLE_ON_CLOSE;
-			event->UniqueErrorValue = 0;
-			event->FinalStatus = STATUS_NO_MEMORY;
-			event->MajorFunctionCode = IRP_MJ_CLOSE;
-			event->IoControlCode = 0;
-			event->DumpData[0] = 0; /*xsp->frame_map[fidx].proc; */
-			event->DumpData[1] = 0; /*IoGetCurrentProcess(); */
-			event->DumpData[2] = fidx;
-			IoWriteErrorLogEntry(event);
-		  }
-	    }
+      { unsigned fidx;
+        for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
+	      if (xsp->frame_tab[fidx])
+		    frames_remaining_in_table += 1;
+	}
       }
 
       cleanup_channel_standby_list(xsp);
@@ -540,7 +492,7 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 	   tables. If this is the last channel, then removing the root
 	   table completely also has the effect of sending a "detach"
 	   to the target firmware. */
-      if (channels_remaining_in_table > 1) {
+      if ((channels_remaining_in_table > 1)||(frames_remaining_in_table > 0)) {
 	    newroot = duplicate_root(xsp, &newrootl);
 	    newroot->chan[xpd->channel].magic = 0;
 	    newroot->chan[xpd->channel].ptr = 0;
@@ -670,6 +622,13 @@ static NTSTATUS read_pci_config(DEVICE_OBJECT*fdo, PCI_COMMON_CONFIG*pci)
  out:
       ObDereferenceObject(pdo);
       return status;
+}
+
+static IO_ALLOCATION_ACTION dma_adapter_stub(DEVICE_OBJECT*fdo,
+					     IRP*irp, void*map_base,
+					     void*context)
+{
+      return DeallocateObjectKeepRegisters;
 }
 
 /*
@@ -830,7 +789,8 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 
 	/* Create a DMA_ADAPTER object for use while allocating buffers. */
       { DEVICE_DESCRIPTION desc;
-        unsigned long nmap = 0;
+        unsigned long nmap = 131072;
+	int idx;
 
 	RtlFillMemory(&desc, sizeof desc, 0);
 	desc.Version = DEVICE_DESCRIPTION_VERSION;
@@ -838,24 +798,57 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	desc.ScatterGather = TRUE;
 	desc.Dma32BitAddresses = TRUE;
 	desc.InterfaceType = PCIBus;
-	desc.MaximumLength = 0x0fffffffUL;
+	desc.MaximumLength = 0x7fffffffUL;
 
 	xsp->dma = IoGetDmaAdapter(xsp->pdo, &desc, &nmap);
 	if (xsp->dma == 0) {
 	      printk("ise%u: IoGetDmaAdapter failed!\n", xsp->id);
 	      return STATUS_UNSUCCESSFUL;
 	}
-      }
 
-	/* Clear the frame members of the instance. */
-      { unsigned idx;
-        for (idx = 0 ;  idx < 16 ; idx += 1) {
+	printk("ise%u: IoGetDmaAdapter nmap=%u\n", xsp->id, nmap);
+
+	xsp->dma->DmaOperations->AllocateAdapterChannel(xsp->dma,
+							xsp->pdo,
+							nmap,
+							dma_adapter_stub,
+							xsp);
+
+	  /* Allocate DMA adapters for all the possible frames as
+	     well. Logically, the ISE has a dma adapter for each frame
+	     that can be mapped. */
+	for (idx = 0 ;  idx < 16 ;  idx += 1) {
+	      nmap = 131072;
+	      RtlFillMemory(&desc, sizeof desc, 0);
+	      desc.Version = DEVICE_DESCRIPTION_VERSION;
+	      desc.Master = TRUE;
+	      desc.ScatterGather = TRUE;
+	      desc.Dma32BitAddresses = TRUE;
+	      desc.InterfaceType = PCIBus;
+	      desc.MaximumLength = 0x7fffffffUL;
+
+	      xsp->frame_dma[idx] = IoGetDmaAdapter(xsp->pdo, &desc, &nmap);
+	      if (xsp->frame_dma[idx] == 0) {
+		    printk("ise%u: IoGetDmaAdapter [%d] failed!\n",
+			   xsp->id, idx);
+		    return STATUS_UNSUCCESSFUL;
+	      }
+
+	      xsp->dma->DmaOperations->AllocateAdapterChannel(xsp->dma,
+							      xsp->pdo,
+							      nmap,
+							      dma_adapter_stub,
+							      xsp);
+
+		/* Clear other frame related members. */
 	      xsp->frame_tab[idx] = 0;
-	      xsp->frame_mdl[idx] = 0;
-	      xsp->frame_pag[idx] = 0;
-	      xsp->frame_map[idx].proc = 0;
-	      xsp->frame_map[idx].base = 0;
+	      xsp->frame_mdl_irp[idx] = 0;
+	      xsp->frame_wait_irp[idx] = 0;
 	}
+
+	xsp->frame_done_flags = 0;
+	xsp->frame_cleanup_mask = 0;
+	xsp->frame_cleanup_work = 0;
       }
 
 	/* Create and initialize an initial root table for the
@@ -897,6 +890,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
  */
 void pnp_stop_ise(DEVICE_OBJECT*fdo)
 {
+      int idx;
       struct instance_t*xsp = (struct instance_t*)fdo->DeviceExtension;
 
       printk("ise%u: pnp_stop_ise\n", xsp->id);
@@ -926,8 +920,15 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
       if (xsp->bar0_size)
 	    dev_init_hardware(xsp);
 
+	/* Free the adapters for the frames. */
+      for (idx = 0 ;  idx < 16 ;  idx += 1) {
+	    xsp->frame_dma[idx]->DmaOperations->FreeAdapterChannel(xsp->frame_dma[idx]);
+	    xsp->frame_dma[idx] = 0;
+      }
+
 	/* Release the DmaOperations object. */
       if (xsp->dma) {
+	    xsp->dma->DmaOperations->FreeAdapterChannel(xsp->dma);
 	    xsp->dma->DmaOperations->PutDmaAdapter(xsp->dma);
 	    xsp->dma = 0;
       }
@@ -1043,6 +1044,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.19  2005/07/26 01:17:32  steve
+ *  New method of mapping frames for version 2.5
+ *
  * Revision 1.18  2005/04/30 03:00:43  steve
  *  Put timeout on root-to-board operations.
  *

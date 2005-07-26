@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001 Picture Elements, Inc.
+ * Copyright (c) 2001-2005 Picture Elements, Inc.
  *    Stephen Williams (steve@picturel.com)
  *
  * $Id$
@@ -18,6 +18,7 @@
 static const wchar_t devname[] = L"\\Device\\isex";
 static const wchar_t dosname[] = L"\\DosDevices\\ISEX";
 
+static void frame_cleanup_workitem(DEVICE_OBJECT*dev, void*ctx);
 
 static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 {
@@ -25,7 +26,7 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
       struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
 
 	/* Cannot restart the board if there are any channels open. */
-      if (xsp->channels != 0) {
+      if (xsp->channels != 0 || xsp->frame_done_flags) {
 	    irp->IoStatus.Status = STATUS_DEVICE_ALREADY_ATTACHED;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -43,15 +44,6 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 	/* restart doorbell to the processor. Code on the processor
 	   should notice this interrupt and restart itself. */
       dev_set_bells(xsp, 0x40000000);
-
-
-	/* Free all the frames that this board may have had. This is
-	   safe to do because there are no longer any pointers to the
-	   table, and the processor has been rebooted. */
-      { unsigned idx;
-        for (idx = 0 ;  idx < 16 ;  idx += 1)
-	      ise_free_frame(xsp, idx);
-      }
 
 
 	/* Make sure the table pointers are still clear, and re-enable
@@ -295,6 +287,361 @@ static NTSTATUS isex_board_type(DEVICE_OBJECT*dev, IRP*irp)
       return STATUS_SUCCESS;
 }
 
+/*
+ * Handle Cancel of a MAKE_MAP_FRAME IRP. Figure out the frame that
+ * this IRP is referring to, make that frame as ready to be cleaned
+ * up, and schedule a workitem to do all the work. Note that we do not
+ * actually cancel the IRP here, we arrange for the cancel to happen.
+ */
+static void map_cancel(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
+
+      int fidx;
+
+      IoReleaseCancelSpinLock(irp->CancelIrql);
+
+      for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
+	    if (xsp->frame_mdl_irp[fidx] == irp) {
+		  xsp->frame_cleanup_mask |= 1 << fidx;
+		  break;
+	    }
+      }
+
+	/* This shouldn't happen. This Cancel should only happen to
+	   IRPs that are listed as an mdl_irp for a frame. */
+
+      if (fidx >= 16) {
+	    printk("isex%u: map_cancel doesn't match any frame?\n", xsp->id);
+	    irp->IoStatus.Status = STATUS_CANCELLED;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return;
+      }
+
+	/* If cleanup is not already in progress, then allocate and
+	   queue a cleanup work item. Do *not* complete the IRP here,
+	   leave that to the frame_cleanup workitem. */
+
+      if (! xsp->frame_cleanup_work) {
+	    printk("isex%u: map_cancel Activating cancel, mask=0x%x\n",
+		   xsp->id, xsp->frame_cleanup_mask);
+	    xsp->frame_cleanup_work = IoAllocateWorkItem(dev);
+	    IoQueueWorkItem(xsp->frame_cleanup_work,
+			    frame_cleanup_workitem,
+			    DelayedWorkQueue, 0);
+      }
+}
+
+
+/*
+ * This is a root_to_board completion routine that the map_frame uses
+ * to *not* complete the IRP. We leave the map IRP perpetually pending
+ * in order to hold the user pages down.
+ */
+static NTSTATUS map_complete(struct instance_t*xsp, IRP*irp)
+{
+      KIRQL save_irql;
+      int frame_id;
+
+      printk("isex%u: mapping complete.\n", xsp->id);
+
+	/* Map the IRP back to the frame that is being mapped. */
+      for (frame_id = 0 ;  frame_id < 16 ;  frame_id += 1) {
+	    if (xsp->frame_mdl_irp[frame_id] == irp)
+		  break;
+      }
+
+      if (frame_id >= 16) {
+	    printk("isex%u: No frame to match map irp?!\n", xsp->id);
+	    return STATUS_SUCCESS;
+      }
+
+	/* Look to see if there is an IRP waiting for the map to
+	   complete. If there is, complete it and clear it from the
+	   wait table. */
+
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
+
+	/* XXXX */
+      IoSetCancelRoutine(irp, &map_cancel);
+
+      xsp->frame_done_flags |= 1 << frame_id;
+      if (xsp->frame_wait_irp[frame_id]) {
+	    IRP*wait_irp = xsp->frame_wait_irp[frame_id];
+	    xsp->frame_wait_irp[frame_id] = 0;
+	    wait_irp->IoStatus.Status = STATUS_SUCCESS;
+	    wait_irp->IoStatus.Information = 0;
+	    IoCompleteRequest(wait_irp, IO_NO_INCREMENT);
+      }
+
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
+
+      return STATUS_SUCCESS;
+}
+
+static NTSTATUS isex_make_map_frame(DEVICE_OBJECT*dev, IRP*irp)
+{
+      int rc;
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
+
+      struct IsexMmapInfo*arg;
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof(*arg)) {
+	    printk("isex%u: Invalid input buffer? length=%u, expecting %u\n",
+		   xsp->id, stp->Parameters.DeviceIoControl.InputBufferLength,
+		   sizeof(*arg));
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      if (irp->AssociatedIrp.SystemBuffer == 0) {
+	    printk("isex%u: Invalid input buffer?\n", xsp->id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      arg = (struct IsexMmapInfo*)irp->AssociatedIrp.SystemBuffer;
+
+      if (arg->frame_id >= 16) {
+	    printk("isex%u: Invalid frame id: %d\n", xsp->id, arg->frame_id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+	/* Check if frame is already present. */
+      if (xsp->frame_mdl_irp[arg->frame_id]) {
+	    printk("isex%u: frame %u already present.\n",
+		   xsp->id, arg->frame_id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+	/* Frame must be page aligned. */
+      if (MmGetMdlByteOffset(irp->MdlAddress) != 0) {
+	    printk("isex%u: frame %u page invalid offset=%u.\n",
+		   xsp->id, arg->frame_id,
+		   MmGetMdlByteOffset(irp->MdlAddress));
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+	/* Save the pended IRP for the frame. */
+      xsp->frame_mdl_irp[arg->frame_id] = irp;
+
+
+	/* Report the frame to the board by mapping it and filling in
+	   the a frame table. This function takes the MdlAddress of
+	   the IRP, which Windows already pinned into memory, and maps
+	   all the pages. The result is the frame_tab filled in for
+	   the named frame. */
+      rc = ise_map_frame(xsp, arg->frame_id, irp->MdlAddress);
+
+      printk("isex%u: Frame %d mapped %d pages. Updating root table.\n",
+	     xsp->id, arg->frame_id, rc);
+
+	/* Report the frame to the board by updating the root
+	   table. Note that the root_to_board function marks the IRP
+	   as pending, so we don't need to mark it ourselves. */
+      { NTSTATUS rc;
+        PHYSICAL_ADDRESS newrootl;
+	struct root_table*newroot = duplicate_root(xsp, &newrootl);
+	newroot->frame_table[arg->frame_id].ptr
+	      = xsp->frame_tab[arg->frame_id]->self;
+	newroot->frame_table[arg->frame_id].magic
+	      = xsp->frame_tab[arg->frame_id]->magic;
+
+	rc = root_to_board(xsp, irp, newroot, newrootl, map_complete, 0);
+	if (rc != STATUS_PENDING) {
+	      printk("ise%u: warning: root_to_board did not return PENDING?\n",
+		     xsp->id);
+	}
+      }
+
+	/* Leave the irp perpetually pending. This holds the pages of
+	   the MDL pinned into memory. The unmap will complete the IRP
+	   after the frame is unmapped. */
+      return STATUS_PENDING;
+}
+
+static NTSTATUS isex_wait_map_frame(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
+
+      KIRQL save_irql;
+      struct IsexMmapInfo*arg;
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof(*arg)) {
+	    printk("wait_map_frame Input buffer length %d != %d\n",
+		   stp->Parameters.DeviceIoControl.InputBufferLength,
+		   sizeof(*arg));
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      arg = (struct IsexMmapInfo*)irp->AssociatedIrp.SystemBuffer;
+
+      if (arg->frame_id >= 16) {
+	    printk("wait_map_frame Invalid frame_id %d\n",
+		   arg->frame_id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+
+	/* Check that this frame is active. If there is no IRP for the
+	   frame mapping, then this frame doesn't exist. */
+
+      if (xsp->frame_mdl_irp[arg->frame_id] == 0) {
+	    printk("wait_map_frame Invalid frame_id %d\n",
+		   arg->frame_id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      if (xsp->frame_wait_irp[arg->frame_id] != 0) {
+	    printk("wait_map_frame already waiting for frame_id %d\n",
+		   arg->frame_id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+	/* If we know the frame is already done, then complete the
+	   wait now with SUCCESS. */
+
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
+
+      if (xsp->frame_done_flags & (1 << arg->frame_id)) {
+	    KeReleaseSpinLock(&xsp->mutex, save_irql);
+	    irp->IoStatus.Status = STATUS_SUCCESS;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_SUCCESS;
+      }
+
+      xsp->frame_wait_irp[arg->frame_id] = irp;
+      KeReleaseSpinLock(&xsp->mutex, save_irql);
+
+      IoMarkIrpPending(irp);
+      return STATUS_PENDING;
+};
+
+static NTSTATUS unmap_unmake_frame_2(struct instance_t*xsp, IRP*irp);
+
+static NTSTATUS isex_unmap_unmake_frame(DEVICE_OBJECT*dev, IRP*irp)
+{
+      IO_STACK_LOCATION*stp = IoGetCurrentIrpStackLocation(irp);
+      struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
+
+      struct IsexMmapInfo*arg;
+
+      if (stp->Parameters.DeviceIoControl.InputBufferLength != sizeof(*arg)) {
+	    printk("unmap_unmake_frame Input buffer length %d != %d\n",
+		   stp->Parameters.DeviceIoControl.InputBufferLength,
+		   sizeof(*arg));
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+      arg = (struct IsexMmapInfo*)irp->AssociatedIrp.SystemBuffer;
+
+      if (arg->frame_id >= 16) {
+	    printk("unmap_unmake_frame Invalid frame_id %d\n",
+		   arg->frame_id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+	/* Check if frame is actually present. */
+      if (xsp->frame_mdl_irp[arg->frame_id] == 0) {
+	    printk("unmap_unmake_frame frame_id %d is not mapped\n",
+		   arg->frame_id);
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
+
+	/* Edit root table. */
+      { NTSTATUS rc;
+        PHYSICAL_ADDRESS newrootl;
+	struct root_table*newroot = duplicate_root(xsp, &newrootl);
+	newroot->frame_table[arg->frame_id].ptr = 0;
+	newroot->frame_table[arg->frame_id].magic = 0;
+
+	rc = root_to_board(xsp, irp, newroot, newrootl,
+			   unmap_unmake_frame_2, 0);
+	if (rc != STATUS_PENDING) {
+	      printk("ise%u: warning: root_to_board did not return PENDING?\n",
+		     xsp->id);
+	      irp->IoStatus.Status = rc;
+	      irp->IoStatus.Information = 0;
+	      IoCompleteRequest(irp, IO_NO_INCREMENT);
+	      return rc;
+	}
+      }
+
+	/* Wait for the root table to update before continuing. */
+      return STATUS_PENDING;
+}
+
+/*
+ * The root_to_board function calls this function when the root table
+ * update is complete. I can finaly unmap the frame and release the
+ * IRP that is held in place.
+ */
+static NTSTATUS unmap_unmake_frame_2(struct instance_t*xsp, IRP*irp)
+{
+      struct IsexMmapInfo*arg
+	    = (struct IsexMmapInfo*)irp->AssociatedIrp.SystemBuffer;
+
+      ise_unmap_frame(xsp, arg->frame_id);
+
+	/* Complete the IRP of the map request. This releases the
+	   memory for the process. */
+      xsp->frame_mdl_irp[arg->frame_id]->IoStatus.Status = STATUS_SUCCESS;
+      xsp->frame_mdl_irp[arg->frame_id]->IoStatus.Information = 0;
+      IoCompleteRequest(xsp->frame_mdl_irp[arg->frame_id], IO_NO_INCREMENT);
+
+      xsp->frame_mdl_irp[arg->frame_id] = 0;
+
+	/* Mark the frame as no longer in use. */
+      xsp->frame_done_flags &= ~( 1 << arg->frame_id );
+	/* Make extra sure the frame is not marked for cleanup. */
+      xsp->frame_cleanup_mask &= ~( 1 << arg->frame_id );
+
+	/* The UNMAP itself is now done. */
+      irp->IoStatus.Status = STATUS_SUCCESS;
+      irp->IoStatus.Information = 0;
+      IoCompleteRequest(irp, IO_NO_INCREMENT);
+      return STATUS_SUCCESS;
+}
+
 NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 {
       IO_STACK_LOCATION*iop = IoGetCurrentIrpStackLocation(irp);
@@ -322,12 +669,145 @@ NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp)
 	  case UCRX_BOARD_TYPE:
 	    return isex_board_type(dev, irp);
 
+	  case ISEX_MAKE_MAP_FRAME:
+	    return isex_make_map_frame(dev, irp);
+
+	  case ISEX_WAIT_MAP_FRAME:
+	    return isex_wait_map_frame(dev, irp);
+
+	  case ISEX_UNMAP_UNMAKE_FRAME:
+	    return isex_unmap_unmake_frame(dev, irp);
+
       }
 
       irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
       irp->IoStatus.Information = 0;
       IoCompleteRequest(irp, IO_NO_INCREMENT);
       return STATUS_UNSUCCESSFUL;
+}
+
+static NTSTATUS frame_cleanup_2(struct instance_t*xsp, IRP*irp);
+
+/*
+ * This function is called in IRQL==PASSIVE from the IRP_MJ_CLEANUP
+ * handler or from work items of the Cancel function for involved
+ * IRPs. Start the process of cleaning up marked frames, and arrange
+ * for the cancellation of the frame's IRP.
+ */
+static void frame_cleanup_workitem(DEVICE_OBJECT*dev, void*ctx)
+{
+      struct instance_t*xsp = *((struct instance_t**)dev->DeviceExtension);
+      IRP*irp = (IRP*)ctx;
+
+      PHYSICAL_ADDRESS newrootl;
+      struct root_table*newroot;
+
+      NTSTATUS rc;
+      int fidx;
+      int open_channels = 0;
+
+      for (fidx = 0 ;  fidx < ROOT_TABLE_CHANNELS ;  fidx += 1) {
+	    if (xsp->root && (xsp->root->chan[fidx].ptr != 0))
+		  open_channels += 1;
+      }
+
+	/* If there are no open channels and this cleans up all the
+	   remaining frames, then detach from the board
+	   completely. Otherwise, edit the root table to remove the
+	   now defunct frames. */
+
+      if ((open_channels == 0)
+	  && (xsp->frame_cleanup_mask == xsp->frame_done_flags)) {
+	    newroot = 0;
+	    newrootl.LowPart = 0;
+	    newrootl.HighPart = 0;
+
+	    printk("isex%u: arranging to clean up ALL frames.\n", xsp->id);
+
+      } else {
+	    newroot = duplicate_root(xsp, &newrootl);
+	    for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
+
+		  if (! (xsp->frame_cleanup_mask & (1 << fidx)))
+			continue;
+
+		  printk("isex%u: arranging to clean up frame %d.\n",
+			 xsp->id, fidx);
+
+		  newroot->frame_table[fidx].ptr = 0;
+		  newroot->frame_table[fidx].magic = 0;
+	    }
+      }
+
+	/* Send off the edits (or detach) to the board. */
+      rc = root_to_board(xsp, irp, newroot, newrootl, frame_cleanup_2, 0);
+      if (rc != STATUS_PENDING) {
+	    printk("ise%u: warning: root_to_board did not return PENDING?\n",
+		   xsp->id);
+      }
+}
+
+/*
+ * Continue with edits of the root table by unmapping the frames that
+ * I edited out. Unlike with a simple unmap, here we *CANCELLED* the
+ * irps that hold the mdl.
+ */
+static NTSTATUS frame_cleanup_2(struct instance_t*xsp, IRP*irp)
+{
+      int fidx;
+#if 0
+      printk("XXXX frame_cleanup_2\n");
+#endif
+      for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
+	    IRP*irpf = xsp->frame_mdl_irp[fidx];
+
+	    if (irpf == 0)
+		  continue;
+
+	      /* Detect that this is not one of the frames being
+		 cleaned up. If the frame is still in the root table,
+		 then it's cleanup is not in progress so skip it. */
+	    if (xsp->root && xsp->root->frame_table[fidx].ptr != 0)
+		  continue;
+
+	    printk("isex%u: frame_cleanup_2 cancel frame %d\n", xsp->id, fidx);
+	    ise_unmap_frame(xsp, fidx);
+
+	      /* Explicitly remove the cancel routine of the IRP. */
+	    IoSetCancelRoutine(irpf, 0);
+	      /* Explicitly mark the IRP as cancelled. */
+	    irpf->IoStatus.Status = STATUS_CANCELLED;
+	    irpf->IoStatus.Information = 0;
+	    IoCompleteRequest(irpf, IO_NO_INCREMENT);
+	      /* Clear all mention of the IRP from the table list. */
+	    xsp->frame_mdl_irp[fidx] = 0;
+	      /* Clear the frame map done and cleanup_mask flags. */
+	    xsp->frame_done_flags   &= ~( 1 << fidx );
+	    xsp->frame_cleanup_mask &= ~( 1 << fidx );
+      }
+
+      if (irp) {
+	      /* The CLEANUP itself is now done. */
+	    irp->IoStatus.Status = STATUS_SUCCESS;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+      }
+
+	/* If after this there are still some frames to clean up, then
+	   reschedule the workitem for another pass. Otherwise, delete
+	   the workitem. */
+      if (xsp->frame_cleanup_mask) {
+	    printk("isex%u: Residual pending frame cleanup, mask=0x%x\n",
+		   xsp->id, xsp->frame_cleanup_mask);
+	    IoQueueWorkItem(xsp->frame_cleanup_work,
+			    frame_cleanup_workitem,
+			    DelayedWorkQueue, 0);
+      } else {
+	    IoFreeWorkItem(xsp->frame_cleanup_work);
+	    xsp->frame_cleanup_work = 0;
+      }
+
+      return STATUS_SUCCESS;
 }
 
 /*
@@ -429,6 +909,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.14  2005/07/26 01:17:32  steve
+ *  New method of mapping frames for version 2.5
+ *
  * Revision 1.13  2005/03/02 15:25:57  steve
  *  Dump channels in diagnose1.
  *
@@ -443,38 +926,5 @@ void remove_isex(DEVICE_OBJECT*fdx)
  *
  * Revision 1.9  2002/04/11 00:49:30  steve
  *  Move FreeCommonBuffers to PASSIVE_MODE using standby lists.
- *
- * Revision 1.8  2002/04/10 23:20:27  steve
- *  Do not touch IRP after it is completed.
- *
- * Revision 1.7  2001/09/28 18:09:54  steve
- *  Create a per-device mutex to manage multi-processor access
- *  to the instance object.
- *
- *  Fix some problems with timeout handling.
- *
- *  Add some diagnostic features for tracking down locking
- *  or delay problems.
- *
- * Revision 1.6  2001/09/07 02:59:50  steve
- *  More diagnose details
- *
- * Revision 1.5  2001/09/06 21:42:50  steve
- *  Add get_trace.
- *
- * Revision 1.4  2001/09/06 18:28:43  steve
- *  Read timeouts.
- *
- * Revision 1.3  2001/08/14 22:25:30  steve
- *  Add SseBase device
- *
- * Revision 1.2  2001/07/30 21:32:43  steve
- *  Rearrange the status path to follow the return codes of
- *  the callbacks, and preliminary implementation of the
- *  RUN_PROGRAM ioctl.
- *
- * Revision 1.1  2001/07/26 00:31:30  steve
- *  Windows 2000 driver.
- *
  */
 

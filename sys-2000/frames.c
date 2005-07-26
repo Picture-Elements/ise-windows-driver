@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001 Picture Elements, Inc.
+ * Copyright (c) 2001-2005 Picture Elements, Inc.
  *    Stephen Williams (steve@picturel.com)
  *
  * $Id$
@@ -13,38 +13,40 @@
  */
 # include  "ise_sys.h"
 
-
 /*
- * Allocate a frame with the requested size, if a frame does not yet
- * exist. Return the allocated size. If the frame already exists, then
- * return the size of the existing frame.
+ * Take in an MDL and create a frame table for all the pages. This
+ * function assumes that the MDL is already pinned into memory, and
+ * the fidx indexes a free frame_tab slot. This function does not pass
+ * the table to the SSE/JSE board, that is the job of the caller which
+ * needs a state machine.
  */
-unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
-			     unsigned long frame_size)
+int ise_map_frame(struct instance_t*xsp, unsigned fidx, MDL*mdl)
 {
-      unsigned long flag_tmp;
-      unsigned idx;
+      DMA_ADAPTER*frame_dma = xsp->frame_dma[fidx];
       unsigned long page_count;
-      unsigned long table_size;
       PHYSICAL_ADDRESS frame_bus;
+      unsigned long frame_size;
+      unsigned char*frame_va;
 
-      if (xsp->frame_tab[fidx] != 0) {
-	    return xsp->frame_tab[fidx]->page_size
-		  * xsp->frame_tab[fidx]->page_count;
-      }
+      unsigned long table_size;
+      int page_idx;
 
-      page_count = (frame_size + PAGE_SIZE - 1) / PAGE_SIZE;
+	/* Calculate information about the frame. */
+      page_count = (MmGetMdlByteCount(mdl) + PAGE_SIZE - 1) / PAGE_SIZE;
       frame_size = page_count * PAGE_SIZE;
+      frame_va   = (unsigned char*)MmGetMdlVirtualAddress(mdl);
 
-	/* Allocate and initialize the frame table. The buffer
-	   pointers will be filled in as the pages are allocated. */
+	/* Allocate a table big enough to hold all the
+	   pointers. Allocate this as a COMMON BUFFER through the core
+	   dma adapter, and *not* through the frame dma adapter. */
       table_size = sizeof(struct frame_table) + page_count * sizeof(__u32);
+
       xsp->frame_tab[fidx] = xsp->dma->DmaOperations->AllocateCommonBuffer(
-				    xsp->dma, table_size, &frame_bus, TRUE);
+				       xsp->dma, table_size, &frame_bus, TRUE);
       if (xsp->frame_tab[fidx] == 0) {
 	    printk("ise%u: Unable to allocate frame_tab[%u] (%u bytes)\n",
 		   xsp->id, fidx, table_size);
-	    return 0;
+	    return -1;
       }
 
       RtlFillMemory(xsp->frame_tab[fidx], table_size, 0);
@@ -53,177 +55,77 @@ unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
       xsp->frame_tab[fidx]->page_size = PAGE_SIZE;
       xsp->frame_tab[fidx]->page_count = page_count;
 
-	/* Allocate an array of void* to hold the virtual addresses of
-	   the frame buffers. The physical addresses will go into the
-	   frame table. Zero fill this table so that non-allocation of
-	   pages is certain to be detected. */
-      xsp->frame_pag[fidx] = (void**)ExAllocatePool(NonPagedPool,
-						    page_count*sizeof(void*));
-      if (xsp->frame_pag[fidx] == 0) {
-	    printk("ise%u: Unable to allocate frame_pag[%u]\n",
-		   xsp->id, fidx);
-	    goto no_mem;
-      }
+	/* Get mappings of all the pages in the MDL. Here we use the
+	   frame dma adapter. */
+      page_idx = 0;
+      while (frame_size > 0) {
+	    PHYSICAL_ADDRESS page;
+	    ULONG trans = frame_size;
 
-      RtlFillMemory(xsp->frame_pag[fidx], page_count*sizeof(void*), 0);
-
-
-	/* Allocate an MDL that will hold the entire frame. I will be
-	   building this up later, as I allocate the pages
-	   themselves. */
-      xsp->frame_mdl[fidx] = IoAllocateMdl(0, frame_size, FALSE, FALSE, 0);
-      if (xsp->frame_mdl[fidx] == 0) {
-	    printk("ise%u: Unable to allocate frame_mdl[%u]\n",
-		   xsp->id, fidx);
-	    goto no_mem;
-      }
-
-
-	/* Allocate the pages of the frame, one page at a time. Add
-	   each page to the frame_tab, frame_pag and frame_mdl arrays
-	   as I get them. Enable the cache, because on ix86 systems
-	   the memory is coherent even when PCI devices are involved.
-	   NOTE: XP will BSOD if it is not marked cacheable. */
-      flag_tmp = 0;
-      for (idx = 0 ;  idx < page_count ;  idx += 1) {
-	    PHYSICAL_ADDRESS page_bus;
-	    void* page_vrt;
-	    MDL*mtmp;
-
-	    page_vrt = xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
-				       PAGE_SIZE, &page_bus, TRUE);
-	    xsp->frame_tab[fidx]->page[idx] = page_bus.LowPart;
-	    xsp->frame_pag[fidx] [idx] = page_vrt;
-
-	    if (page_vrt == 0)
-		  goto no_mem;
-
-	    RtlFillMemory(page_vrt, PAGE_SIZE, idx+1);
-
-	      /* Make an MDL for this page, in order to make the
-		 proper PFN_NUMBER for the page. Then copy that
-		 PFN_NUMBER into the make mdl and release the
-		 temporary mdl. */
-	    mtmp = IoAllocateMdl(page_vrt, PAGE_SIZE, FALSE, FALSE, 0);
-	    if (mtmp == 0) {
-		  printk("ise%u: Unable to allocate temporary mdl?\n",
-			 xsp->id);
-		  goto no_mem;
+	    page = frame_dma->DmaOperations->MapTransfer(xsp->dma,
+							mdl, 0,
+							frame_va,
+							&trans,
+							FALSE);
+	    while (trans >= PAGE_SIZE) {
+		  xsp->frame_tab[fidx]->page[page_idx] = page.LowPart;
+		  page.LowPart += PAGE_SIZE;
+		  frame_va     += PAGE_SIZE;
+		  frame_size   -= PAGE_SIZE;
+		  trans        -= PAGE_SIZE;
+		  page_idx     += 1;
 	    }
-
-	    MmBuildMdlForNonPagedPool(mtmp);
-	    flag_tmp |= mtmp->MdlFlags;
-
-	    MmGetMdlPfnArray(xsp->frame_mdl[fidx]) [idx] =
-		  MmGetMdlPfnArray(mtmp) [0];
-
-	    IoFreeMdl(mtmp);
       }
 
-      xsp->frame_mdl[fidx]->MdlFlags |= MDL_ALLOCATED_FIXED_SIZE;
-      xsp->frame_mdl[fidx]->MdlFlags |= MDL_PAGES_LOCKED;
-      xsp->frame_mdl[fidx]->MdlFlags |= MDL_SOURCE_IS_NONPAGED_POOL;
+	/* At this point, page_idx should == page_count. */
 
-      return xsp->frame_tab[fidx]->page_size
-	    * xsp->frame_tab[fidx]->page_count;
-
- no_mem:
-
-      page_count = (frame_size + PAGE_SIZE - 1) / PAGE_SIZE;
-      frame_size = page_count * PAGE_SIZE;
-      table_size = sizeof(struct frame_table) + page_count * sizeof(__u32);
-
-      if (xsp->frame_mdl[fidx]) {
-	    IoFreeMdl(xsp->frame_mdl[fidx]);
-	    xsp->frame_mdl[fidx] = 0;
-      }
-
-      if (xsp->frame_tab[fidx]) {
-
-	    for (idx = 0 ;  idx < page_count ;  idx += 1) {
-		  PHYSICAL_ADDRESS page_bus;
-		  void* page_vrt;
-
-		  page_vrt = xsp->frame_pag[fidx] [idx];
-		  if (page_vrt == 0)
-			break;
-
-		  page_bus.LowPart = xsp->frame_tab[fidx]->page[idx];
-		  page_bus.HighPart = 0;
-		  xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-			       PAGE_SIZE, page_bus, page_vrt, TRUE);
-	    }
-
-	      /* Free the frame table */
-	    xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-			  table_size, frame_bus, xsp->frame_tab[fidx], TRUE);
-	    xsp->frame_tab[fidx] = 0;
-      }
-
-      if (xsp->frame_pag[fidx]) {
-	    ExFreePool(xsp->frame_pag[fidx]);
-	    xsp->frame_pag[fidx] = 0;
-      }
-
-      return 0;
+	/* All done, return the page count in case someone cares. */
+      return page_count;
 }
 
 /*
- * This function frees a selected frame. It releases all the memory
- * and the mdls of the frame. It assumes that the environment has
- * assured that the memory is not mapped somewhere.
+ * Unmap the pages of the indexed frame. The frame must already have
+ * been detached from the root table.
  */
-void ise_free_frame(struct instance_t*xsp, unsigned fidx)
+void ise_unmap_frame(struct instance_t*xsp, unsigned fidx)
 {
-      unsigned long page_count, table_size;
       PHYSICAL_ADDRESS frame_bus;
-      unsigned idx;
+      unsigned long page_count;
+      unsigned long table_size;
+      MDL*mdl;
 
-	/* If the frame does not exist, then there is nothing to free. */
-      if (xsp->frame_mdl[fidx] == 0)
-	    return;
-
-	/* If the frame is mapped by someone, then it can't be freed. */
-      if (xsp->frame_map[fidx].base != 0)
-	    return;
-
-      page_count = xsp->frame_tab[fidx]->page_count;
-      IoFreeMdl(xsp->frame_mdl[fidx]);
-      xsp->frame_mdl[fidx] = 0;
-
-	/* Free the individual pages of the frame, then free the
-	   frame_pag pointer to all those pages. */
-      if (xsp->frame_pag[fidx]) {
-	    for (idx = 0 ;  idx < page_count ;  idx += 1) {
-		  PHYSICAL_ADDRESS page_bus;
-		  void* page_vrt;
-
-		  page_vrt = xsp->frame_pag[fidx] [idx];
-		  if (page_vrt == 0)
-			break;
-
-		  page_bus.LowPart = xsp->frame_tab[fidx]->page[idx];
-		  page_bus.HighPart = 0;
-		  xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-				   PAGE_SIZE, page_bus, page_vrt, TRUE);
-	    }
-
-	    ExFreePool(xsp->frame_pag[fidx]);
-	    xsp->frame_pag[fidx] = 0;
-      }
-
-	/* Free the frame table */
-      table_size = sizeof(struct frame_table) + page_count * sizeof(__u32);
-      frame_bus.HighPart = 0;
       frame_bus.LowPart = xsp->frame_tab[fidx]->self;
+      frame_bus.HighPart = 0;
+      page_count = xsp->frame_tab[fidx]->page_count;
+
+      table_size = sizeof(struct frame_table) + page_count * sizeof(__u32);
+
+      mdl = xsp->frame_mdl_irp[fidx]->MdlAddress;
+
+	/* Unmap the frame MDL all in one chunk. */
+      xsp->frame_dma[fidx]->DmaOperations->FlushAdapterBuffers(
+					      xsp->frame_dma[fidx],
+					      mdl, 0,
+					      MmGetMdlVirtualAddress(mdl),
+					      MmGetMdlByteCount(mdl),
+					      FALSE);
+
+	/* Release the frame table itself. */
       xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-		      table_size, frame_bus, xsp->frame_tab[fidx], TRUE);
+						table_size,
+						frame_bus,
+						xsp->frame_tab[fidx],
+						TRUE);
+
       xsp->frame_tab[fidx] = 0;
 }
 
 
 /*
  * $Log$
+ * Revision 1.7  2005/07/26 01:17:32  steve
+ *  New method of mapping frames for version 2.5
+ *
  * Revision 1.6  2002/06/21 00:51:33  steve
  *  Only allocate cached buffers to share with ISE.
  *

@@ -52,6 +52,7 @@ extern struct channel_t* channel_by_id(struct instance_t*xsp,
 extern DEVICE_OBJECT* create_isex(DRIVER_OBJECT*drv, struct instance_t*xsp);
 extern void remove_isex(DEVICE_OBJECT*fdx);
 
+extern NTSTATUS isex_cleanup(DEVICE_OBJECT*dev, IRP*irp);
 extern NTSTATUS isex_ioctl(DEVICE_OBJECT*dev, IRP*irp);
 extern NTSTATUS isex_run_program(DEVICE_OBJECT*dev, IRP*irp);
 
@@ -114,11 +115,6 @@ struct irp_counter {
       unsigned scheduled;
       unsigned complete;
       unsigned cancelled;
-};
-
-struct frame_mapping {
-      PEPROCESS proc;
-      void*base;
 };
 
       
@@ -204,24 +200,18 @@ struct instance_t {
 	   pages of the frame. The pages are all PAGE_SIZE bytes. The
 	   bus address of the frame_tab is stored in the root table.
 
-	   The frame_ref keeps a reference count for each frame. This
-	   prevents releasing frames that are still mapped by
-	   processes somewhere.
-
-	   The frame_mdl is a Windows MDL that describes the frame
-	   memory. This is used to perform mappings into user mode
-	   address space.
-
-	   The frame_pag is a table of pointers to the virtual
-	   addresses of each page. The bus addresses for the pages are
-	   stored in the frame_tab. The bus and virtual addresses are
-	   needed to pass to FreeCommonBuffer when the pages are not
-	   needed anymore. */
+	   The frame_mdl_irp is the irp of the DeviceIoControl that
+	   created the mapping. This irp is held so that it can be
+	   cancelled after an unmap_unmake, or when the device is
+	   closed.  The irp->MdlAddress is the Mdl for the frame. */
       struct frame_table*frame_tab[16];
-      MDL     *frame_mdl[16];
-      void   **frame_pag[16];
+      IRP               *frame_mdl_irp[16];
+      DMA_ADAPTER       *frame_dma[16];
+      IRP               *frame_wait_irp[16];
 
-      struct frame_mapping frame_map[16];
+      int                frame_done_flags;
+      int                frame_cleanup_mask;
+      PIO_WORKITEM       frame_cleanup_work;
 
 	/* Keep a list of the currently open channels. */
       struct channel_t *channels;
@@ -238,8 +228,6 @@ struct channel_t {
       unsigned short channel;
 	/* Back-pointer to the device. */
       struct instance_t*xsp;
-	/* Process id to identify the owner. */
-      PEPROCESS proc;
 
 	/* This is the read timeout, in milliseconds. */
       long read_timeout;
@@ -312,9 +300,13 @@ extern const struct ise_ops_tab jse_operations;
 /*
  * These are functions for manipulating frames.
  */
+#if 0
 extern void ise_free_frame(struct instance_t*xsp, unsigned fidx);
 extern unsigned long ise_make_frame(struct instance_t*xsp, unsigned fidx,
 				    unsigned long frame_size);
+#endif
+extern int ise_map_frame(struct instance_t*xsp, unsigned fidx, MDL*mdl);
+extern void ise_unmap_frame(struct instance_t*xsp, unsigned fidx);
 
 /*
  * These are DPCs that are extern so that the initialization code can
@@ -326,6 +318,9 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.14  2005/07/26 01:17:32  steve
+ *  New method of mapping frames for version 2.5
+ *
  * Revision 1.13  2005/04/30 03:00:43  steve
  *  Put timeout on root-to-board operations.
  *
