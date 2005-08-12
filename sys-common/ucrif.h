@@ -134,6 +134,7 @@
  */
 # define UCR_SEND_FILE_MARK UCR_(UCR_WRITEFLAG,3)
 
+#if !defined(WINNT) && !defined(_WIN32)
 /*
  * The driver can manage up to 16 frames, each no larger then
  * 256Meg. Use UCR_MAKE_FRAME to create a frame with the given size.
@@ -177,10 +178,10 @@
  * UCR_SEND_FRAME is obsolete. It is no longer implemented in the
  * driver, and should not be used.
  */
-# define UCR_MAKE_FRAME UCR_(0,4)
-# define UCR_FREE_FRAME UCR_(0,5)
-# define UCR_SEND_FRAME UCR_(0,6)
-
+/* # define UCR_MAKE_FRAME UCR_(0,4) */
+/* # define UCR_FREE_FRAME UCR_(0,5) */
+/* # define UCR_SEND_FRAME UCR_(0,6) */
+#endif
 
 
 #if defined(WINNT) || defined(_WIN32)
@@ -199,14 +200,25 @@
  * For MUNMAP, the driver unmaps the region at the base, and returns
  * nothing as a result.
  */
-struct UcrMmapInfo {
+struct IsexMmapInfo {
       unsigned frame_id;
-      unsigned long off;
-      unsigned long size;
-      void*base;
 };
-# define UCR_MMAP_FRAME UCR_(UCR_READFLAG|UCR_WRITEFLAG, 8)
-# define UCR_MUNMAP_FRAME UCR_(UCR_READFLAG|UCR_WRITEFLAG, 9)
+
+/*
+ * These are DEVICE#0x8003, FILE_ACCESS_ANY. the MMAP is code#20(0x14)
+ * and METHOD_OUT_DIRECT. The OUT_DIRECT part is so that the output buffer
+ * is passed in as an MDL. That is the region that is mapped. The
+ * MAKE_MAP_FRAME will *not* complete until another thread unmaps the
+ * frame, or the process dies.
+ *
+ * The UNMAK_UNMAKE_FRAME is METHOD_BUFFERED as we don't need to
+ * include the mapping in the unmap method. This just unmaps the
+ * specified frame.
+ */
+# define ISEX_MAKE_MAP_FRAME     0x80030052
+# define ISEX_UNMAP_UNMAKE_FRAME 0x80030054
+# define ISEX_WAIT_MAP_FRAME     0x80030058
+
 #endif
 
 #if defined(WINNT) || defined(_WIN32)
@@ -332,6 +344,9 @@ struct ucrx_timeout_s {
 
 /*
  * $Log$
+ * Revision 1.4  2005/08/12 22:32:45  steve
+ *  New 2.5 driver API.
+ *
  * Revision 1.3  2004/08/02 23:45:49  steve
  *  Add UCRX_BOARD_TYPE control
  *
