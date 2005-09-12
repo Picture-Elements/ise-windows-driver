@@ -83,3 +83,11 @@ SymbolicName=ISE_ROOT_TIMEOUT
 Language=English
 Timeout sending root table to the board.
 .
+
+MessageId=10
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_FRAME_MAP_FAILED
+Language=English
+Unable to map requested frame.
+.

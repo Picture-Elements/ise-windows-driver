@@ -6,6 +6,7 @@
  */
 
 # include  "ise_sys.h"
+# include  "isem.h"
 # include  "ucrif.h"
 
 /*
@@ -448,6 +449,33 @@ static NTSTATUS isex_make_map_frame(DEVICE_OBJECT*dev, IRP*irp)
 	   all the pages. The result is the frame_tab filled in for
 	   the named frame. */
       rc = ise_map_frame(xsp, arg->frame_id, irp->MdlAddress);
+
+      if (rc < 0) {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 3*sizeof(ULONG);
+
+	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_FRAME_MAP_FAILED;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_UNSUCCESSFUL;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 3*sizeof(ULONG);
+	    event->DumpData[0] = arg->frame_id;
+	    event->DumpData[1] = MmGetMdlByteCount(irp->MdlAddress);
+	    event->DumpData[2] = (ULONG)MmGetMdlVirtualAddress(irp->MdlAddress);
+	    IoWriteErrorLogEntry(event);
+
+	    printk("isex%u: frame %u failed to map.\n",
+		   xsp->id, arg->frame_id);
+
+	    xsp->frame_mdl_irp[arg->frame_id] = 0;
+
+	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
+	    irp->IoStatus.Information = 0;
+	    IoCompleteRequest(irp, IO_NO_INCREMENT);
+	    return STATUS_UNSUCCESSFUL;
+      }
 
       printk("isex%u: Frame %d mapped %d pages. Updating root table.\n",
 	     xsp->id, arg->frame_id, rc);
@@ -909,6 +937,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.15  2005/09/12 21:52:46  steve
+ *  More error checking.
+ *
  * Revision 1.14  2005/07/26 01:17:32  steve
  *  New method of mapping frames for version 2.5
  *
