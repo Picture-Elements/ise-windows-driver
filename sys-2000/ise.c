@@ -791,6 +791,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       { DEVICE_DESCRIPTION desc;
         unsigned long nmap = 131072;
 	int idx;
+	KIRQL save_irql;
 
 	RtlFillMemory(&desc, sizeof desc, 0);
 	desc.Version = DEVICE_DESCRIPTION_VERSION;
@@ -808,11 +809,17 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 
 	printk("ise%u: IoGetDmaAdapter nmap=%u\n", xsp->id, nmap);
 
+	  /* AllocateAdapterChannel requires IRQL==DISPATCH_LEVEL. We
+	     know by context that we are called from a PNP dispatch
+	     routine and are therefore PASSIVE_LEVEL. So RAISE the
+	     irql to get the adapter channel, and lower it when done. */
+	KeRaiseIrql(DISPATCH_LEVEL, &save_irql);
 	xsp->dma->DmaOperations->AllocateAdapterChannel(xsp->dma,
 							xsp->pdo,
 							nmap,
 							dma_adapter_stub,
 							xsp);
+	KeLowerIrql(save_irql);
 
 	  /* Allocate DMA adapters for all the possible frames as
 	     well. Logically, the ISE has a dma adapter for each frame
@@ -834,11 +841,13 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 		    return STATUS_UNSUCCESSFUL;
 	      }
 
+	      KeRaiseIrql(DISPATCH_LEVEL, &save_irql);
 	      xsp->dma->DmaOperations->AllocateAdapterChannel(xsp->dma,
 							      xsp->pdo,
 							      nmap,
 							      dma_adapter_stub,
 							      xsp);
+	      KeLowerIrql(save_irql);
 
 		/* Clear other frame related members. */
 	      xsp->frame_tab[idx] = 0;
@@ -891,6 +900,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 void pnp_stop_ise(DEVICE_OBJECT*fdo)
 {
       int idx;
+      KIRQL save_irql;
       struct instance_t*xsp = (struct instance_t*)fdo->DeviceExtension;
 
       printk("ise%u: pnp_stop_ise\n", xsp->id);
@@ -920,6 +930,8 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
       if (xsp->bar0_size)
 	    dev_init_hardware(xsp);
 
+      KeRaiseIrql(DISPATCH_LEVEL, &save_irql);
+
 	/* Free the adapters for the frames. */
       for (idx = 0 ;  idx < 16 ;  idx += 1) {
 	    xsp->frame_dma[idx]->DmaOperations->FreeAdapterChannel(xsp->frame_dma[idx]);
@@ -932,6 +944,8 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
 	    xsp->dma->DmaOperations->PutDmaAdapter(xsp->dma);
 	    xsp->dma = 0;
       }
+
+      KeLowerIrql(save_irql);
 
 	/* Disconnect the interrupt */
       if (xsp->irq != 0) {
@@ -1044,6 +1058,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.20  2005/09/12 21:52:11  steve
+ *  Get IRQL for AllocateAdapterChannel right.
+ *
  * Revision 1.19  2005/07/26 01:17:32  steve
  *  New method of mapping frames for version 2.5
  *
