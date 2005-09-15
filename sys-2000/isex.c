@@ -546,9 +546,12 @@ static NTSTATUS isex_wait_map_frame(DEVICE_OBJECT*dev, IRP*irp)
 	    return STATUS_UNSUCCESSFUL;
       }
 
+      KeAcquireSpinLock(&xsp->mutex, &save_irql);
+
       if (xsp->frame_wait_irp[arg->frame_id] != 0) {
 	    printk("wait_map_frame already waiting for frame_id %d\n",
 		   arg->frame_id);
+	    KeReleaseSpinLock(&xsp->mutex, save_irql);
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -557,8 +560,6 @@ static NTSTATUS isex_wait_map_frame(DEVICE_OBJECT*dev, IRP*irp)
 
 	/* If we know the frame is already done, then complete the
 	   wait now with SUCCESS. */
-
-      KeAcquireSpinLock(&xsp->mutex, &save_irql);
 
       if (xsp->frame_done_flags & (1 << arg->frame_id)) {
 	    KeReleaseSpinLock(&xsp->mutex, save_irql);
@@ -569,9 +570,10 @@ static NTSTATUS isex_wait_map_frame(DEVICE_OBJECT*dev, IRP*irp)
       }
 
       xsp->frame_wait_irp[arg->frame_id] = irp;
+      IoMarkIrpPending(irp);
+
       KeReleaseSpinLock(&xsp->mutex, save_irql);
 
-      IoMarkIrpPending(irp);
       return STATUS_PENDING;
 };
 
@@ -937,6 +939,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.16  2005/09/15 22:03:42  steve
+ *  Protect IoMarkPending of WAIT ioctl from frame completion.
+ *
  * Revision 1.15  2005/09/12 21:52:46  steve
  *  More error checking.
  *
