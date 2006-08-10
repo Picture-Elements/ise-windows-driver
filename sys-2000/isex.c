@@ -315,6 +315,10 @@ static void map_cancel(DEVICE_OBJECT*dev, IRP*irp)
 
       if (fidx >= 16) {
 	    printk("isex%u: map_cancel doesn't match any frame?\n", xsp->id);
+	      /* This IoSetCancelRoutine should not be necessary, but
+		 we are in a place where we shouldn't be, so make sure
+		 there really in no cancel routine. */
+	    IoSetCancelRoutine(irp, 0);
 	    irp->IoStatus.Status = STATUS_CANCELLED;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -654,6 +658,7 @@ static NTSTATUS unmap_unmake_frame_2(struct instance_t*xsp, IRP*irp)
 
 	/* Complete the IRP of the map request. This releases the
 	   memory for the process. */
+      IoSetCancelRoutine(xsp->frame_mdl_irp[arg->frame_id], 0);
       xsp->frame_mdl_irp[arg->frame_id]->IoStatus.Status = STATUS_SUCCESS;
       xsp->frame_mdl_irp[arg->frame_id]->IoStatus.Information = 0;
       IoCompleteRequest(xsp->frame_mdl_irp[arg->frame_id], IO_NO_INCREMENT);
@@ -939,6 +944,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.17  2006/08/10 00:13:44  steve
+ *  Remember to clear cancel function from map ioctl on cleanup.
+ *
  * Revision 1.16  2005/09/15 22:03:42  steve
  *  Protect IoMarkPending of WAIT ioctl from frame completion.
  *
