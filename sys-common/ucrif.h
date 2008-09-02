@@ -178,9 +178,11 @@
  * UCR_SEND_FRAME is obsolete. It is no longer implemented in the
  * driver, and should not be used.
  */
-/* # define UCR_MAKE_FRAME UCR_(0,4) */
-/* # define UCR_FREE_FRAME UCR_(0,5) */
+#if defined(linux)
+# define UCR_MAKE_FRAME UCR_(0,4)
+# define UCR_FREE_FRAME UCR_(0,5)
 /* # define UCR_SEND_FRAME UCR_(0,6) */
+#endif
 #endif
 
 
@@ -344,6 +346,9 @@ struct ucrx_timeout_s {
 
 /*
  * $Log$
+ * Revision 1.5  2008/09/02 17:47:50  steve-icarus
+ *  Select Linux specific ioctl code definitions automatically.
+ *
  * Revision 1.4  2005/08/12 22:32:45  steve
  *  New 2.5 driver API.
  *
