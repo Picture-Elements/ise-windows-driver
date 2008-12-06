@@ -278,6 +278,7 @@ struct ise_ops_tab {
 
 extern const struct ise_ops_tab ise_operations;
 extern const struct ise_ops_tab jse_operations;
+extern const struct ise_ops_tab ejse_operations;
 
 # define dev_clear_hardware(xsp)   (xsp)->dev_ops->clear_hardware(xsp)
 # define dev_init_hardware(xsp)    (xsp)->dev_ops->init_hardware(xsp)
@@ -318,6 +319,9 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.15  2008/12/06 03:27:08  steve
+ *  Add EJSE support.
+ *
  * Revision 1.14  2005/07/26 01:17:32  steve
  *  New method of mapping frames for version 2.5
  *

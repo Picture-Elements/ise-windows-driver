@@ -13,7 +13,7 @@ Class=Image
 ClassGuid={6bdd1fc6-810f-11d0-bec7-08002be2092f}
 ; CatalogFile=ise.cat
 
-DriverVer=5/5/2008,2.5.2008.505
+DriverVer=12/4/2008,2.5.2008.1205
 
 ;
 ; Driver information
@@ -31,8 +31,9 @@ DriverVer=5/5/2008,2.5.2008.505
 ; id is matched up with discovered boards in order to select
 ; one of these records. The record in turn references an
 ; install section.
-%picturel.ise% = ise.Install, PCI\VEN_12C5&DEV_007f
-%picturel.jse% = jse.Install, PCI\VEN_8086&DEV_b555&SUBSYS_008A12C5
+%picturel.ise%  = ise.Install, PCI\VEN_12C5&DEV_007f
+%picturel.jse%  = jse.Install, PCI\VEN_8086&DEV_b555&SUBSYS_008A12C5
+%picturel.ejse% = ejse.Install, PCI\VEN_12C5&DEV_0091
 
 
 [DestinationDirs]
@@ -90,6 +91,20 @@ ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
 ServiceBinary  = %10%\system32\drivers\ise.sys
 
 
+[ejse.Install.ntx86]
+CopyFiles=ise.Files.Driver.NTx86
+
+[ejse.Install.NTx86.Services]
+AddService = ise, 0x00000002 , ejse.Service, ise.EventLog
+
+[ejse.Service]
+DisplayName    = %picturel.ejse%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
+ServiceBinary  = %10%\system32\drivers\ise.sys
+
+
 ; In all cases, this is the driver file.
 [ise.Files.Driver.ntx86]
 ise.sys,,,2
@@ -124,5 +139,6 @@ HKR,,TypesSupported,0x00010001,7
 
 picturel.ise = "Picture Elements, Imaging Subsystem Engine (ISE/SSE)"
 picturel.jse = "Picture Elements, Imaging Subsystem Engine (JSE)"
+picturel.ejse = "Picture Elements, Imaging Subsystem Engine (EJSE)"
 picturel = "Picture Elements, Inc."
 ISE_Driver_Collection = "ISE Driver Collection"

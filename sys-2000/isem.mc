@@ -14,10 +14,10 @@ FacilityNames = (
 
 MessageId=1
 Facility=ISE
-Severity=Informational
-SymbolicName=ISE_NO_DEVICES
+Severity=Warning
+SymbolicName=ISE_NO_DEVICE
 Language=English
-No devices found.
+Device type not supported by driver.
 .
 
 MessageId=2
@@ -91,3 +91,36 @@ SymbolicName=ISE_FRAME_MAP_FAILED
 Language=English
 Unable to map requested frame.
 .
+
+MessageId=11
+Facility=ISE
+Severity=Informational
+SymbolicName=ISE_DETECTED_EJSE
+Language=English
+Detected EJSE board
+.
+
+MessageId=12
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_GET_ADAPTER_FAILED
+Language=English
+Unable to allocate DMA Adapter for buffer mapping
+.
+
+MessageId=13
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_GET_ROOT_TABLE_FAILED
+Language=English
+Unable to allocate DMA Adapter for buffer mapping
+.
+
+MessageId=14
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_NO_RESOURCE_MAP
+Language=English
+System couldn't map resources to the board.
+.
+

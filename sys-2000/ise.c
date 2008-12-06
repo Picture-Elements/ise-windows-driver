@@ -655,6 +655,17 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       res = iop->Parameters.StartDevice.AllocatedResourcesTranslated;
 
       if (res == 0) {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+	    event = IoAllocateErrorLogEntry(fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_NO_RESOURCE_MAP;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_UNSUCCESSFUL;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpData[0] = 0;
+	    IoWriteErrorLogEntry(event);
+
 	    printk("ise%u: no resources?!\n", xsp->id);
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -663,7 +674,19 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 
       status = read_pci_config(fdo, &pci);
       if (!NT_SUCCESS(status)) {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET);
+	    event = IoAllocateErrorLogEntry(fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_NO_RESOURCE_MAP;
+	    event->UniqueErrorValue = 1;
+	    event->FinalStatus = STATUS_UNSUCCESSFUL;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpData[0] = 0;
+	    IoWriteErrorLogEntry(event);
+
 	    printk("ise%u: No PCI config?!\n", xsp->id);
+	    return STATUS_UNSUCCESSFUL;
       }
 
       if ((pci.VendorID==0x12c5) && (pci.DeviceID==0x007f)) {
@@ -700,7 +723,51 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	      IoWriteErrorLogEntry(event);
 	    }
 
+      } else if (pci.DeviceID==0x0091) {
+	      /* Windows Vista does not return the correct Vendor ID
+		 for this device. Possibly, it is confused by the
+		 sequence of bridges between here and the
+		 device. Paradoxically, is *does* get the device id
+		 right, so we can use that to detect that we have an
+		 EJSE. The really spectacular paradox about all this,
+		 though, is that windows DOES get the correct
+		 device/vendor when it probes the device to bind the
+		 driver. Since 0x0091 is the only device ID in the inf
+		 file for this driver, this shortened test is
+		 adequate. *Sheesh* */
+	    xsp->dev_ops = &ejse_operations;
+	    printk("ise%u: Detected %s board\n",
+		   xsp->id, xsp->dev_ops->full_name);
+
+	    { IO_ERROR_LOG_PACKET*event;
+	      unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
+	      event = IoAllocateErrorLogEntry(fdo, (UCHAR)psize);
+	      event->ErrorCode = ISE_DETECTED_EJSE;
+	      event->UniqueErrorValue = 0;
+	      event->FinalStatus = STATUS_SUCCESS;
+	      event->MajorFunctionCode = 0;
+	      event->IoControlCode = 0;
+	      event->DumpDataSize = 2 * sizeof(ULONG);
+	      event->DumpData[0] = pci.VendorID;
+	      event->DumpData[1] = pci.DeviceID;
+	      IoWriteErrorLogEntry(event);
+	    }
+
       } else {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 3*sizeof(ULONG);
+	    event = IoAllocateErrorLogEntry(fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_NO_DEVICE;
+	    event->UniqueErrorValue = (pci.DeviceID << 16) + pci.VendorID;
+	    event->FinalStatus = STATUS_SUCCESS;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 3 * sizeof(ULONG);
+	    event->DumpData[0] = pci.VendorID;
+	    event->DumpData[1] = pci.DeviceID;
+	    event->DumpData[2] = 0x55555555;
+	    IoWriteErrorLogEntry(event);
+
 	    printk("ise%u: Unknown device type?!\n", xsp->id);
 	    irp->IoStatus.Status = STATUS_UNSUCCESSFUL;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -752,7 +819,6 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	    }
       }
 
-
 	/* Connect the interrupt to the interrupt handler. */
       status = IoConnectInterrupt(&xsp->irq, xxisr, fdo, 0, xsp->ivec,
 				  xsp->irql, xsp->irql, LevelSensitive,
@@ -803,6 +869,18 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 
 	xsp->dma = IoGetDmaAdapter(xsp->pdo, &desc, &nmap);
 	if (xsp->dma == 0) {
+	      IO_ERROR_LOG_PACKET*event;
+	      unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
+	      event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	      event->ErrorCode = ISE_GET_ADAPTER_FAILED;
+	      event->UniqueErrorValue = 0;
+	      event->FinalStatus = STATUS_UNSUCCESSFUL;
+	      event->MajorFunctionCode = 0;
+	      event->IoControlCode = 0;
+	      event->DumpDataSize = 2*sizeof(ULONG);
+	      event->DumpData[0] = xsp->id;
+	      event->DumpData[1] = 16;
+	      IoWriteErrorLogEntry(event);
 	      printk("ise%u: IoGetDmaAdapter failed!\n", xsp->id);
 	      return STATUS_UNSUCCESSFUL;
 	}
@@ -836,6 +914,18 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 
 	      xsp->frame_dma[idx] = IoGetDmaAdapter(xsp->pdo, &desc, &nmap);
 	      if (xsp->frame_dma[idx] == 0) {
+		    IO_ERROR_LOG_PACKET*event;
+		    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
+		    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+		    event->ErrorCode = ISE_GET_ADAPTER_FAILED;
+		    event->UniqueErrorValue = 0;
+		    event->FinalStatus = STATUS_UNSUCCESSFUL;
+		    event->MajorFunctionCode = 0;
+		    event->IoControlCode = 0;
+		    event->DumpDataSize = 2*sizeof(ULONG);
+		    event->DumpData[0] = xsp->id;
+		    event->DumpData[1] = idx;
+		    IoWriteErrorLogEntry(event);
 		    printk("ise%u: IoGetDmaAdapter [%d] failed!\n",
 			   xsp->id, idx);
 		    return STATUS_UNSUCCESSFUL;
@@ -869,7 +959,19 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 					   sizeof(struct root_table),
 					   &xsp->rootl, FALSE);
       if (xsp->root == 0) {
-	    printk("ise%u: Unable to allocate root tabl\n", xsp->id);
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
+	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_GET_ROOT_TABLE_FAILED;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_INSUFFICIENT_RESOURCES;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 2*sizeof(ULONG);
+	    event->DumpData[0] = xsp->id;
+	    event->DumpData[1] = sizeof(struct root_table);
+	    IoWriteErrorLogEntry(event);
+	    printk("ise%u: Unable to allocate root table\n", xsp->id);
 	    return STATUS_INSUFFICIENT_RESOURCES;
       }
 
@@ -934,6 +1036,9 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
 
 	/* Free the adapters for the frames. */
       for (idx = 0 ;  idx < 16 ;  idx += 1) {
+	    if (xsp->frame_dma[idx] == 0)
+		  continue;
+
 	    xsp->frame_dma[idx]->DmaOperations->FreeAdapterChannel(xsp->frame_dma[idx]);
 	    xsp->frame_dma[idx] = 0;
       }
@@ -1058,6 +1163,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.21  2008/12/06 03:27:08  steve
+ *  Add EJSE support.
+ *
  * Revision 1.20  2005/09/12 21:52:11  steve
  *  Get IRQL for AllocateAdapterChannel right.
  *
