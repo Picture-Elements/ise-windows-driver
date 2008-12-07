@@ -29,7 +29,7 @@
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,5,2008,1205
+ FILEVERSION 2,5,2008,1206
  PRODUCTVERSION 2,5,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
@@ -47,7 +47,7 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Picture Elements, Inc.\0"
             VALUE "FileDescription", "ISE/SSE/JSE/EJSE device driver (Win2000/XP/Vista)\0"
-            VALUE "FileVersion", "2, 5, 2008, 1205\0"
+            VALUE "FileVersion", "2, 5, 2008, 1206\0"
             VALUE "InternalName", "ISE\0"
             VALUE "LegalCopyright", "Copyright © 2001-2008 Picture Elements, Inc.\0"
             VALUE "OriginalFilename", "ISE.SYS\0"
