@@ -281,6 +281,8 @@ static NTSTATUS isex_board_type(DEVICE_OBJECT*dev, IRP*irp)
 
       if (xsp->dev_ops == &jse_operations)
 	    *(int*)irp->AssociatedIrp.SystemBuffer = UCRX_BOARD_TYPE_JSE;
+      if (xsp->dev_ops == &ejse_operations)
+	    *(int*)irp->AssociatedIrp.SystemBuffer = UCRX_BOARD_TYPE_EJSE;
 
       irp->IoStatus.Information = sizeof(int);
       irp->IoStatus.Status = STATUS_SUCCESS;
@@ -944,6 +946,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.18  2008/12/10 21:21:41  steve
+ *  Report EJSE boards as EJSE boards.
+ *
  * Revision 1.17  2006/08/10 00:13:44  steve
  *  Remember to clear cancel function from map ioctl on cleanup.
  *

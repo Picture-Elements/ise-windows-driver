@@ -343,9 +343,13 @@ struct ucrx_timeout_s {
 # define UCRX_BOARD_TYPE_INVAL (-1)
 # define UCRX_BOARD_TYPE_ISE   (0)
 # define UCRX_BOARD_TYPE_JSE   (1)
+# define UCRX_BOARD_TYPE_EJSE  (2)
 
 /*
  * $Log$
+ * Revision 1.6  2008/12/10 21:21:41  steve
+ *  Report EJSE boards as EJSE boards.
+ *
  * Revision 1.5  2008/09/02 17:47:50  steve-icarus
  *  Select Linux specific ioctl code definitions automatically.
  *
