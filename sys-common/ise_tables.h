@@ -72,6 +72,7 @@ struct root_table {
  * size of the frame is defined as page_size * page_count.
  */
 # define FRAME_TABLE_MAGIC 0x2eaffaaf
+# define FRAME_TABLE_MAGIC64 0x3eaffaaf
 struct frame_table {
       __u32 magic;
       __u32 self;
@@ -128,6 +129,9 @@ struct channel_table {
 
 /*
  * $Log$
+ * Revision 1.3  2009/02/05 17:06:57  steve
+ *  Support for frame64 frame table pointers.
+ *
  * Revision 1.2  2001/08/14 22:25:30  steve
  *  Add SseBase device
  *
