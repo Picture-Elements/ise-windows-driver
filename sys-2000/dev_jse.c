@@ -167,6 +167,7 @@ static void jse_diagnose1_dump(struct instance_t*xsp)
 
 const struct ise_ops_tab jse_operations = {
       "JSE",
+      0, /* No flags */
       jse_init_hardware,
       jse_clear_hardware,
       jse_mask_irqs,
@@ -187,6 +188,11 @@ const struct ise_ops_tab jse_operations = {
 
 /*
  * $Log$
+ * Revision 1.2  2009/04/03 18:21:17  steve
+ *  Implement frame64 support in Windows driver.
+ *  More robust error handling around root tables.
+ *  Keep a deeper root standby list to prevent leaks.
+ *
  * Revision 1.1  2004/07/15 04:19:26  steve
  *  Extend to support JSE boards.
  *

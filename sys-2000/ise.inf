@@ -2,7 +2,7 @@
 ;
 ; Installation file (.inf) for the ISE device.
 ;
-; (c) Copyright 2001-2008 Picture Elements, Inc. 
+; (c) Copyright 2001-2009 Picture Elements, Inc. 
 ;
 
 [Version]
@@ -13,7 +13,7 @@ Class=Image
 ClassGuid={6bdd1fc6-810f-11d0-bec7-08002be2092f}
 ; CatalogFile=ise.cat
 
-DriverVer=12/4/2008,2.5.2008.1210
+DriverVer=1/21/2009,2.5.2009.403
 
 ;
 ; Driver information

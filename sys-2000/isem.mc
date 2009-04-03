@@ -124,3 +124,74 @@ Language=English
 System couldn't map resources to the board.
 .
 
+MessageId=15
+Facility=ISE
+Severity=Informational
+SymbolicName=ISE_RESTART_BUSY_BOARD
+Language=English
+Tried to restart a busy board.
+.
+
+MessageId=16
+Facility=ISE
+Severity=Informational
+SymbolicName=ISE_SPURIOUS_ROOT_TO_BOARD_DPC
+Language=English
+Spurious root_to_board_dpc call.
+.
+
+MessageId=17
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_BUSY_ROOT_TO_BOARD_DPC
+Language=English
+root_to_board is already busy
+.
+
+MessageId=18
+Facility=ISE
+Severity=Error
+SymbolicName=ISE_FRAME_TAB_64BITS
+Language=English
+FRAME TABLE placed in 64bit memory.
+.
+
+MessageId=19
+Facility=ISE
+Severity=Error
+SymbolicName=ISE_FRAME_PAGE_64BITS
+Language=English
+Frame page placed in 64bit memory.
+.
+
+MessageId=20
+Facility=ISE
+Severity=Error
+SymbolicName=ISE_NO_SCRATCH_MEMORY
+Language=English
+Unable to allocate scratch memory.
+.
+
+MessageId=21
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_ROOT_STANDBY_LEAK
+Language=English
+Possible leaking root table standby memory.
+.
+
+MessageId=22
+Facility=ISE
+Severity=Error
+SymbolicName=ISE_ROOT_TAB_64BITS
+Language=English
+Kernel placed root table it 64bit memory.
+.
+
+MessageId=23
+Facility=ISE
+Severity=Warning
+SymbolicName=ISE_ROOT_STUCK
+Language=English
+Target board root table is stuck.
+.

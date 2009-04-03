@@ -181,6 +181,7 @@ static void ejse_diagnose1_dump(struct instance_t*xsp)
 
 const struct ise_ops_tab ejse_operations = {
       "EJSE",
+      0x0001, /* flags: dma64 */
       ejse_init_hardware,
       ejse_clear_hardware,
       ejse_mask_irqs,
@@ -201,6 +202,11 @@ const struct ise_ops_tab ejse_operations = {
 
 /*
  * $Log$
+ * Revision 1.2  2009/04/03 18:21:17  steve
+ *  Implement frame64 support in Windows driver.
+ *  More robust error handling around root tables.
+ *  Keep a deeper root standby list to prevent leaks.
+ *
  * Revision 1.1  2008/12/06 03:27:08  steve
  *  Add EJSE support.
  *

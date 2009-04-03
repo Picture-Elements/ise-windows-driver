@@ -82,30 +82,100 @@ static void cleanup_channel_standby_list(struct instance_t*xsp)
 }
 
 /*
+ * NOTE: This function must be called with the xsp->mutex spin lock
+ * already acquired.
+ */
+static void release_root(struct instance_t*xsp,
+			 struct root_table*ptr, PHYSICAL_ADDRESS ptrl)
+{
+      int idx = 0;
+
+      while (xsp->root_standby_table[idx].root && idx < ROOT_STANDBY_TABLE_MAX)
+	    idx += 1;
+
+      if (idx >= ROOT_STANDBY_TABLE_MAX) {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 0*sizeof(ULONG);
+
+	    xsp->root_standby_leak += 1;
+
+	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_ROOT_STANDBY_LEAK;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_SUCCESS;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 1*sizeof(ULONG);
+	    event->DumpData[0] = xsp->root_standby_leak;
+	    IoWriteErrorLogEntry(event);
+	    return;
+      }
+
+      xsp->root_standby_table[idx].root = ptr;
+      xsp->root_standby_table[idx].rootl = ptrl;
+}
+
+/*
  * Make a copy of the current root table, with the magic numbers
  * twisted so that this is a valid table. The caller can then do minor
  * modifications to this copy before installing it.
  */
 struct root_table*duplicate_root(struct instance_t*xsp, PHYSICAL_ADDRESS*ptrl)
 {
+      int idx;
       KIRQL save_irql;
       struct root_table*newroot;
 
       KeAcquireSpinLock(&xsp->mutex, &save_irql);
-      if (xsp->root_standby) {
-	    newroot = xsp->root_standby;
-	    *ptrl = xsp->rootl_standby;
-	    xsp->root_standby = 0;
+      idx = 0;
+      while (xsp->root_standby_table[idx].root == 0 && idx < ROOT_STANDBY_TABLE_MAX)
+	    idx += 1;
+
+      if (idx < ROOT_STANDBY_TABLE_MAX) {
+	    newroot = xsp->root_standby_table[idx].root;
+	    *ptrl = xsp->root_standby_table[idx].rootl;
+	    xsp->root_standby_table[idx].root = 0;
+
 	    KeReleaseSpinLock(&xsp->mutex, save_irql);
 
       } else {
 	    KeReleaseSpinLock(&xsp->mutex, save_irql);
 	    newroot = (struct root_table*)
 		  xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
-				     sizeof(struct root_table), ptrl, FALSE);
+			      sizeof(struct root_table), ptrl, FALSE);
 
-	    if (newroot == 0)
+	    if (newroot == 0) {
+		  IO_ERROR_LOG_PACKET*event;
+		  unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 0*sizeof(ULONG);
+
+		  event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+		  event->ErrorCode = ISE_GET_ROOT_TABLE_FAILED;
+		  event->UniqueErrorValue = 0;
+		  event->FinalStatus = STATUS_UNSUCCESSFUL;
+		  event->MajorFunctionCode = 0;
+		  event->IoControlCode = 0;
+		  event->DumpDataSize = 0*sizeof(ULONG);
+		  event->DumpData[0] = 0;
+		  IoWriteErrorLogEntry(event);
 		  return 0;
+	    }
+
+	    if (ptrl->HighPart != 0) {
+		  IO_ERROR_LOG_PACKET*event;
+		  unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 1*sizeof(ULONG);
+
+		  event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+		  event->ErrorCode = ISE_ROOT_TAB_64BITS;
+		  event->UniqueErrorValue = 0;
+		  event->FinalStatus = STATUS_SUCCESS;
+		  event->MajorFunctionCode = 0;
+		  event->IoControlCode = 0;
+		  event->DumpDataSize = 2*sizeof(ULONG);
+		  event->DumpData[0] = ptrl->LowPart;
+		  event->DumpData[1] = ptrl->HighPart;
+		  IoWriteErrorLogEntry(event);
+		  return 0;
+	    }
       }
 
       if (xsp->root) {
@@ -158,9 +228,24 @@ NTSTATUS root_to_board(struct instance_t*xsp, IRP*irp,
       mask = dev_mask_irqs(xsp);
 
       if (xsp->root_callback != 0) {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
+
 	    printk("ise%u: warning: root_to_board is busy.\n", xsp->id);
 	    dev_unmask_irqs(xsp, mask);
 	    KeReleaseSpinLock(&xsp->mutex, save_irql);
+
+	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_BUSY_ROOT_TO_BOARD_DPC;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_SUCCESS;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 2*sizeof(ULONG);
+	    event->DumpData[0] = 0;
+	    event->DumpData[1] = 0;
+	    IoWriteErrorLogEntry(event);
+
 	    return STATUS_DEVICE_NOT_READY;
       }
 
@@ -181,7 +266,7 @@ NTSTATUS root_to_board(struct instance_t*xsp, IRP*irp,
 	/* If the timeout is enabled, then set a fixed timeout of 2
 	   seconds for waiting for the root table. */
       KeSetTimer(&xsp->root_timer,
-		 RtlConvertLongToLargeInteger(-4000000 * 10),
+		 RtlConvertLongToLargeInteger(-10000000 * 2),
 		 &xsp->root_timer_dpc);
 		       
 	/* Make sure the resp register is different from what I'm
@@ -230,8 +315,26 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	   waiting, or maybe the ISE board is not yet finished the
 	   change. */
       if (xsp->root_callback == 0) {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 4*sizeof(ULONG);
+
 	    KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
 	    printk("ise%u: Spurious root_to_board_dpc?\n", xsp->id);
+
+	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_SPURIOUS_ROOT_TO_BOARD_DPC;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_SUCCESS;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 5*sizeof(ULONG);
+	    event->DumpData[0] = xsp->root? xsp->root->self : 0;
+	    event->DumpData[1] = dev_get_root_table_resp(xsp);
+	    event->DumpData[2] = xsp->root2? xsp->root2->self : 0;
+	    event->DumpData[3] = irp != 0;
+	    event->DumpData[4] = timeout_flag;
+	    IoWriteErrorLogEntry(event);
+
 	    return;
       }
 
@@ -244,9 +347,10 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
 	    event->FinalStatus = STATUS_SUCCESS;
 	    event->MajorFunctionCode = 0;
 	    event->IoControlCode = 0;
-	    event->DumpDataSize = 2*sizeof(ULONG);
-	    event->DumpData[0] = xsp->root2? xsp->root2->self : 0;
+	    event->DumpDataSize = 3*sizeof(ULONG);
+	    event->DumpData[0] = xsp->root? xsp->root->self : 0;
 	    event->DumpData[1] = dev_get_root_table_resp(xsp);
+	    event->DumpData[2] = xsp->root2? xsp->root2->self : 0;
 	    IoWriteErrorLogEntry(event);
 
 	      /* The timeout expired, but this seems to be a special
@@ -260,31 +364,51 @@ static void root_to_board_dpc(KDPC*dpc, void*ctx, void*arg1, void*arg2)
       }
 
       if (dev_get_root_table_resp(xsp) != (xsp->root2? xsp->root2->self : 0)) {
+
+	      /* The board is not responsing to the root table. So
+		 give up, poison the new root table and release it. */
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
+	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_ROOT_STUCK;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_SUCCESS;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 3*sizeof(ULONG);
+	    event->DumpData[0] = xsp->root? xsp->root->self : 0;
+	    event->DumpData[1] = dev_get_root_table_resp(xsp);
+	    event->DumpData[2] = xsp->root2? xsp->root2->self : 0;
+	    IoWriteErrorLogEntry(event);
+
 	    printk("ise%u: warning: root not received yet: "
 		   "resp=%x, self=%x.\n", xsp->id,
 		   dev_get_root_table_resp(xsp),
 		   (xsp->root2? xsp->root2->self : 0));
-	    KeReleaseSpinLockFromDpcLevel(&xsp->mutex);
-	    return;
+
+	    if (xsp->root2) {
+		  RtlZeroMemory(xsp->root2, sizeof (struct root_table));
+		  release_root(xsp, xsp->root2, xsp->rootl2);
+		  xsp->root2 = 0;
+	    }
+
+      } else {
+
+	      /* Poison then release the old root table, and set the
+		 pointers to point to the new root table. Save the
+		 existing root for possible reuse later. */
+	    if (xsp->root) {
+		  RtlZeroMemory(xsp->root, sizeof (struct root_table));
+		  release_root(xsp, xsp->root, xsp->rootl);
+	    }
+
+	    xsp->root  = xsp->root2;
+	    xsp->rootl = xsp->rootl2;
+
+	    xsp->root2 = 0;
       }
 
       xsp->root_irp = 0;
-
-	/* Poison then release the old root table, and set the
-	   pointers to point to the new root table. Save the existing
-	   root for possible reuse later. */
-      if (xsp->root) {
-	    RtlZeroMemory(xsp->root, sizeof (struct root_table));
-	    if (xsp->root_standby)
-		  xsp->root_standby_leak += 1;
-	    xsp->root_standby = xsp->root;
-	    xsp->rootl_standby = xsp->rootl;
-      }
-
-      xsp->root  = xsp->root2;
-      xsp->rootl = xsp->rootl2;
-
-      xsp->root2 = 0;
 
       if (timeout_flag && xsp->root_timeout_callback) {
 	    callback_t callback = xsp->root_timeout_callback;
@@ -418,6 +542,11 @@ NTSTATUS dev_create(DEVICE_OBJECT*dev, IRP*irp)
       { NTSTATUS rc;
         PHYSICAL_ADDRESS newrootl;
         struct root_table*newroot = duplicate_root(xsp, &newrootl);
+	if (newroot == 0) {
+	      irp->IoStatus.Status = STATUS_NO_MEMORY;
+	      goto error_cleanup;
+	}
+
         newroot->chan[0].magic = xpd->table->magic;
 	newroot->chan[0].ptr   = xpd->table->self;
 
@@ -494,6 +623,13 @@ NTSTATUS dev_close(DEVICE_OBJECT*dev, IRP*irp)
 	   to the target firmware. */
       if ((channels_remaining_in_table > 1)||(frames_remaining_in_table > 0)) {
 	    newroot = duplicate_root(xsp, &newrootl);
+	    if (newroot == 0) {
+		  irp->IoStatus.Status = STATUS_NO_MEMORY;
+		  irp->IoStatus.Information = 0;
+		  printk("ise%u: close error from root_to_board\n", xsp->id);
+		  IoCompleteRequest(irp, IO_NO_INCREMENT);
+		  return STATUS_NO_MEMORY;
+	    }
 	    newroot->chan[xpd->channel].magic = 0;
 	    newroot->chan[xpd->channel].ptr = 0;
       } else {
@@ -648,7 +784,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 
       xsp->fdo = fdo;
 
-      printk("ise%u: pnp_start_ise\n", xsp->id);
+      printk("ise%u: pnp_start_ise)\n", xsp->id);
 
       iop = IoGetCurrentIrpStackLocation(irp);
       raw = iop->Parameters.StartDevice.AllocatedResources;
@@ -853,7 +989,10 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 
       KeInitializeSpinLock(&xsp->mutex);
 
-	/* Create a DMA_ADAPTER object for use while allocating buffers. */
+	/* Create a DMA_ADAPTER object for use while allocating
+	   buffers. This adapter is for allocating the commin buffer
+	   tables for communicating with the JSE. These buffers must
+	   *not* be in 64bit space, and are not for the frame pages. */
       { DEVICE_DESCRIPTION desc;
         unsigned long nmap = 131072;
 	int idx;
@@ -864,6 +1003,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
         desc.Master = TRUE;
 	desc.ScatterGather = TRUE;
 	desc.Dma32BitAddresses = TRUE;
+	desc.Dma64BitAddresses = FALSE;
 	desc.InterfaceType = PCIBus;
 	desc.MaximumLength = 0x7fffffffUL;
 
@@ -909,6 +1049,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	      desc.Master = TRUE;
 	      desc.ScatterGather = TRUE;
 	      desc.Dma32BitAddresses = TRUE;
+	      desc.Dma64BitAddresses = TRUE;
 	      desc.InterfaceType = PCIBus;
 	      desc.MaximumLength = 0x7fffffffUL;
 
@@ -932,7 +1073,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	      }
 
 	      KeRaiseIrql(DISPATCH_LEVEL, &save_irql);
-	      xsp->dma->DmaOperations->AllocateAdapterChannel(xsp->dma,
+	      xsp->dma->DmaOperations->AllocateAdapterChannel(xsp->frame_dma[idx],
 							      xsp->pdo,
 							      nmap,
 							      dma_adapter_stub,
@@ -949,7 +1090,7 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	xsp->frame_cleanup_mask = 0;
 	xsp->frame_cleanup_work = 0;
       }
-
+#if 0
 	/* Create and initialize an initial root table for the
 	   device. Do not send it to the board, though, because the
 	   board only needs to wake up when there is at least one
@@ -978,6 +1119,14 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       RtlZeroMemory(xsp->root, sizeof(*xsp->root));
       xsp->root->magic = ROOT_TABLE_MAGIC;
       xsp->root->self = xsp->rootl.LowPart;
+#else
+      xsp->root = 0;
+#endif
+      { int idx;
+	for (idx = 0 ; idx < ROOT_STANDBY_TABLE_MAX ; idx += 1)
+	      xsp->root_standby_table[idx].root = 0;
+      }
+      xsp->root_standby_leak = 0;
 
       dev_clear_hardware(xsp);
 
@@ -1019,14 +1168,15 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
 	    xsp->root = 0;
       }
 
-      if (xsp->root_standby) {
-	    xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
-						  sizeof(*xsp->root_standby),
-						  xsp->rootl_standby,
-						  xsp->root_standby,
-						  FALSE);
-	    xsp->root_standby = 0;
+      for (idx = 0 ; idx < ROOT_STANDBY_TABLE_MAX ; idx += 1) {
+	    struct root_table*root = xsp->root_standby_table[idx].root;
+	    PHYSICAL_ADDRESS rootl = xsp->root_standby_table[idx].rootl;
+	    if (root != 0) {
+		  xsp->dma->DmaOperations->FreeCommonBuffer(xsp->dma,
+					  sizeof(*root), rootl, root, FALSE);
+	    }
       }
+
 	/* Make sure the hardware will not interrupt the host. Only do
 	   this if we actually cot device registers. */
       if (xsp->bar0_size)
@@ -1163,6 +1313,11 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.22  2009/04/03 18:21:17  steve
+ *  Implement frame64 support in Windows driver.
+ *  More robust error handling around root tables.
+ *  Keep a deeper root standby list to prevent leaks.
+ *
  * Revision 1.21  2008/12/06 03:27:08  steve
  *  Add EJSE support.
  *

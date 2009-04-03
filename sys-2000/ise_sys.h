@@ -10,6 +10,7 @@
 # include  <wdm.h>
 # include  "ucrif.h"
 # include  "ise_tables.h"
+# include  "isem.h"
 
 struct instance_t;
 struct channel_t;
@@ -117,7 +118,12 @@ struct irp_counter {
       unsigned cancelled;
 };
 
-      
+struct root_standby_table_s {
+      struct root_table*root;
+      PHYSICAL_ADDRESS  rootl;
+};
+# define ROOT_STANDBY_TABLE_MAX 4
+
 /*
  * The device driver creates a DEVICE_OBJECT, an "fdo" object, to
  * carry all the device specific support for the hardware. Included in
@@ -155,11 +161,12 @@ struct instance_t {
       PHYSICAL_ADDRESS rootl;
       struct root_table*root;
 
-	/* This is a root table buffer that is on standby. Save ones
-	   that I've freed, so that it can be reused. */
-      PHYSICAL_ADDRESS rootl_standby;
-
-      struct root_table*root_standby;
+	/* This is a list of root tables that are available on
+	   standby. During normal business we do not actually release
+	   roots due to the cost and risk of doing allocations. So
+	   hold on to released root tables. This list shouldn't grow
+	   especially big. */
+      struct root_standby_table_s root_standby_table[ROOT_STANDBY_TABLE_MAX];
       unsigned root_standby_leak;
 
       unsigned char config_buf[4];
@@ -258,6 +265,8 @@ struct channel_t {
 struct ise_ops_tab {
       const char*full_name;
 
+      int board_flags;
+
       void (*init_hardware)(struct instance_t*xsp);
       void (*clear_hardware)(struct instance_t*xsp);
       unsigned long (*mask_irqs)(struct instance_t*xsp);
@@ -279,6 +288,9 @@ struct ise_ops_tab {
 extern const struct ise_ops_tab ise_operations;
 extern const struct ise_ops_tab jse_operations;
 extern const struct ise_ops_tab ejse_operations;
+
+/* TRUE if the board supports 64bit address DMA. */
+# define dev_dma64(xsp) (0 != ((xsp)->dev_ops->board_flags & 0x0001))
 
 # define dev_clear_hardware(xsp)   (xsp)->dev_ops->clear_hardware(xsp)
 # define dev_init_hardware(xsp)    (xsp)->dev_ops->init_hardware(xsp)
@@ -319,6 +331,11 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.16  2009/04/03 18:21:17  steve
+ *  Implement frame64 support in Windows driver.
+ *  More robust error handling around root tables.
+ *  Keep a deeper root standby list to prevent leaks.
+ *
  * Revision 1.15  2008/12/06 03:27:08  steve
  *  Add EJSE support.
  *

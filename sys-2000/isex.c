@@ -28,6 +28,19 @@ static NTSTATUS ucrx_restart_board(DEVICE_OBJECT*dev, IRP*irp)
 
 	/* Cannot restart the board if there are any channels open. */
       if (xsp->channels != 0 || xsp->frame_done_flags) {
+	    IO_ERROR_LOG_PACKET*event;
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
+	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
+	    event->ErrorCode = ISE_RESTART_BUSY_BOARD;
+	    event->UniqueErrorValue = 0;
+	    event->FinalStatus = STATUS_DEVICE_ALREADY_ATTACHED;
+	    event->MajorFunctionCode = 0;
+	    event->IoControlCode = 0;
+	    event->DumpDataSize = 2*sizeof(ULONG);
+	    event->DumpData[0] = xsp->channels? 1 : 0;
+	    event->DumpData[1] = xsp->frame_done_flags;
+	    IoWriteErrorLogEntry(event);
+
 	    irp->IoStatus.Status = STATUS_DEVICE_ALREADY_ATTACHED;
 	    irp->IoStatus.Information = 0;
 	    IoCompleteRequest(irp, IO_NO_INCREMENT);
@@ -100,7 +113,7 @@ static NTSTATUS isex_diagnose(DEVICE_OBJECT*dev, IRP*irp)
 	    xsp->dev_ops->diagnose1_dump(xsp);
 
 	    printk("ise%u: ROOT TABLE at %p(%x) "
-		   "MAGIC=[%x:%x] standby_leak=%u\n", xsp->id, xsp->root,
+		   "MAGIC=[%x:%x] standby_list_fill=%u\n", xsp->id, xsp->root,
 		   xsp->root? xsp->root->self  : 0x00000000,
 		   xsp->root? xsp->root->magic : 0x00000000,
 		   xsp->root? xsp->root->self  : 0x00000000,
@@ -492,6 +505,12 @@ static NTSTATUS isex_make_map_frame(DEVICE_OBJECT*dev, IRP*irp)
       { NTSTATUS rc;
         PHYSICAL_ADDRESS newrootl;
 	struct root_table*newroot = duplicate_root(xsp, &newrootl);
+	if (newroot == 0) {
+	      irp->IoStatus.Status = STATUS_NO_MEMORY;
+	      irp->IoStatus.Information = 0;
+	      IoCompleteRequest(irp, IO_NO_INCREMENT);
+	      return STATUS_NO_MEMORY;
+	}
 	newroot->frame_table[arg->frame_id].ptr
 	      = xsp->frame_tab[arg->frame_id]->self;
 	newroot->frame_table[arg->frame_id].magic
@@ -627,6 +646,12 @@ static NTSTATUS isex_unmap_unmake_frame(DEVICE_OBJECT*dev, IRP*irp)
       { NTSTATUS rc;
         PHYSICAL_ADDRESS newrootl;
 	struct root_table*newroot = duplicate_root(xsp, &newrootl);
+	if (newroot == 0) {
+	      irp->IoStatus.Status = STATUS_NO_MEMORY;
+	      irp->IoStatus.Information = 0;
+	      IoCompleteRequest(irp, IO_NO_INCREMENT);
+	      return STATUS_NO_MEMORY;
+	}
 	newroot->frame_table[arg->frame_id].ptr = 0;
 	newroot->frame_table[arg->frame_id].magic = 0;
 
@@ -763,6 +788,12 @@ static void frame_cleanup_workitem(DEVICE_OBJECT*dev, void*ctx)
 
       } else {
 	    newroot = duplicate_root(xsp, &newrootl);
+	    if (newroot == 0) {
+		  irp->IoStatus.Status = STATUS_NO_MEMORY;
+		  irp->IoStatus.Information = 0;
+		  IoCompleteRequest(irp, IO_NO_INCREMENT);
+		  return;
+	    }
 	    for (fidx = 0 ;  fidx < 16 ;  fidx += 1) {
 
 		  if (! (xsp->frame_cleanup_mask & (1 << fidx)))
@@ -946,6 +977,11 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.19  2009/04/03 18:21:17  steve
+ *  Implement frame64 support in Windows driver.
+ *  More robust error handling around root tables.
+ *  Keep a deeper root standby list to prevent leaks.
+ *
  * Revision 1.18  2008/12/10 21:21:41  steve
  *  Report EJSE boards as EJSE boards.
  *
