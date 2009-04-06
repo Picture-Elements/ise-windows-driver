@@ -782,6 +782,12 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
       PCI_COMMON_CONFIG pci;
       struct instance_t*xsp = (struct instance_t*)fdo->DeviceExtension;
 
+	/* Save these in case we need them to fully specify the
+	   interrupt arguments to IoConnectInterruptEx. */
+      KIRQL irq_irql;
+      unsigned irq_ivec;
+      KAFFINITY irq_affinity;
+
       xsp->fdo = fdo;
 
       printk("ise%u: pnp_start_ise)\n", xsp->id);
@@ -940,11 +946,11 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 			break;
 
 		      case CmResourceTypeInterrupt:
-			xsp->irql = (KIRQL)prd->u.Interrupt.Level;
-			xsp->ivec = prd->u.Interrupt.Vector;
-			xsp->affinity = prd->u.Interrupt.Affinity;
-			printk("ise%u: Interrupt vector=%u.\n",
-			       xsp->id, xsp->ivec);
+			irq_irql = (KIRQL) prd->u.Interrupt.Level;
+			irq_ivec = prd->u.Interrupt.Vector;
+			irq_affinity = prd->u.Interrupt.Affinity;
+			printk("ise%u: Interrupt vector=%u (irql=%u, affinnity=0x%x).\n",
+			       xsp->id, irq_ivec, irq_irql, irq_affinity);
 			break;
 
 		      default:
@@ -955,11 +961,47 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	    }
       }
 
-	/* Connect the interrupt to the interrupt handler. */
-      status = IoConnectInterrupt(&xsp->irq, xxisr, fdo, 0, xsp->ivec,
-				  xsp->irql, xsp->irql, LevelSensitive,
-				  TRUE, xsp->affinity, FALSE);
+	/* Force the hardware into a passive state. */
+      dev_clear_hardware(xsp);
 
+      KeInitializeDpc(&xsp->root_to_board_dpc, &root_to_board_dpc, xsp);
+      KeInitializeDpc(&xsp->root_timer_dpc,    &root_timer_dpc,    xsp);
+      KeInitializeDpc(&xsp->pending_read_dpc,  &pending_read_dpc,  xsp);
+      KeInitializeDpc(&xsp->pending_write_dpc, &pending_write_dpc, xsp);
+      KeInitializeTimer(&xsp->root_timer);
+
+	/* Connect the interrupt to the interrupt handler. */
+      { IO_CONNECT_INTERRUPT_PARAMETERS irq_parms;
+	printk("ise%u: IoConnectInterruptEx line based\n", xsp->id);
+        RtlZeroMemory(&irq_parms, sizeof irq_parms);
+	irq_parms.Version = CONNECT_LINE_BASED;
+	irq_parms.LineBased.PhysicalDeviceObject = xsp->pdo;
+	irq_parms.LineBased.InterruptObject = &xsp->irq;
+	irq_parms.LineBased.ServiceRoutine = xxisr;
+	irq_parms.LineBased.ServiceContext = fdo;
+	irq_parms.LineBased.SynchronizeIrql = PASSIVE_LEVEL;
+	status = IoConnectInterruptEx(&irq_parms);
+	  /* Perhaps we are on a verion of Windows that does not
+	     supposrt the IoConnectInterruptEx completely. Fallback to
+	     the "FULLY_SPECIFIED" method in that case. */
+	if (! NT_SUCCESS(status)) {
+	      printk("ise%u: Resorting to legacy IoConnectInterruptEx\n", xsp->id);
+	      RtlZeroMemory(&irq_parms, sizeof irq_parms);
+	      irq_parms.Version = CONNECT_FULLY_SPECIFIED;
+	      irq_parms.FullySpecified.PhysicalDeviceObject = xsp->pdo;
+	      irq_parms.FullySpecified.InterruptObject = &xsp->irq;
+	      irq_parms.FullySpecified.ServiceRoutine = xxisr;
+	      irq_parms.FullySpecified.ServiceContext = fdo;
+	      irq_parms.FullySpecified.ShareVector = TRUE;
+	      irq_parms.FullySpecified.Vector = irq_ivec;
+	      irq_parms.FullySpecified.SynchronizeIrql = irq_irql;
+	      irq_parms.FullySpecified.Irql = irq_irql;
+	      irq_parms.FullySpecified.InterruptMode = LevelSensitive;
+	      irq_parms.FullySpecified.ProcessorEnableMask = irq_affinity;
+	      status = IoConnectInterruptEx(&irq_parms);
+	}
+	xsp->irq_version = irq_parms.Version;
+      }
       if (!NT_SUCCESS(status)) {
 	    switch (status) {
 		case STATUS_INSUFFICIENT_RESOURCES:
@@ -974,12 +1016,6 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	    xsp->irq = 0;
 	    return status;
       }
-
-      KeInitializeDpc(&xsp->root_to_board_dpc, &root_to_board_dpc, xsp);
-      KeInitializeDpc(&xsp->root_timer_dpc,    &root_timer_dpc,    xsp);
-      KeInitializeDpc(&xsp->pending_read_dpc,  &pending_read_dpc,  xsp);
-      KeInitializeDpc(&xsp->pending_write_dpc, &pending_write_dpc, xsp);
-      KeInitializeTimer(&xsp->root_timer);
 
       InitializeListHead(&xsp->pending_read_irps);
       InitializeListHead(&xsp->pending_write_irps);
@@ -1090,45 +1126,13 @@ NTSTATUS pnp_start_ise(DEVICE_OBJECT*fdo, IRP*irp)
 	xsp->frame_cleanup_mask = 0;
 	xsp->frame_cleanup_work = 0;
       }
-#if 0
-	/* Create and initialize an initial root table for the
-	   device. Do not send it to the board, though, because the
-	   board only needs to wake up when there is at least one
-	   channel open to it. */
-      xsp->root = (struct root_table*)
-	    xsp->dma->DmaOperations->AllocateCommonBuffer(xsp->dma,
-					   sizeof(struct root_table),
-					   &xsp->rootl, FALSE);
-      if (xsp->root == 0) {
-	    IO_ERROR_LOG_PACKET*event;
-	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
-	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
-	    event->ErrorCode = ISE_GET_ROOT_TABLE_FAILED;
-	    event->UniqueErrorValue = 0;
-	    event->FinalStatus = STATUS_INSUFFICIENT_RESOURCES;
-	    event->MajorFunctionCode = 0;
-	    event->IoControlCode = 0;
-	    event->DumpDataSize = 2*sizeof(ULONG);
-	    event->DumpData[0] = xsp->id;
-	    event->DumpData[1] = sizeof(struct root_table);
-	    IoWriteErrorLogEntry(event);
-	    printk("ise%u: Unable to allocate root table\n", xsp->id);
-	    return STATUS_INSUFFICIENT_RESOURCES;
-      }
 
-      RtlZeroMemory(xsp->root, sizeof(*xsp->root));
-      xsp->root->magic = ROOT_TABLE_MAGIC;
-      xsp->root->self = xsp->rootl.LowPart;
-#else
       xsp->root = 0;
-#endif
       { int idx;
 	for (idx = 0 ; idx < ROOT_STANDBY_TABLE_MAX ; idx += 1)
 	      xsp->root_standby_table[idx].root = 0;
       }
       xsp->root_standby_leak = 0;
-
-      dev_clear_hardware(xsp);
 
 
 	/* All done. Return success. */
@@ -1204,7 +1208,11 @@ void pnp_stop_ise(DEVICE_OBJECT*fdo)
 
 	/* Disconnect the interrupt */
       if (xsp->irq != 0) {
-	    IoDisconnectInterrupt(xsp->irq);
+	    IO_DISCONNECT_INTERRUPT_PARAMETERS irq_parms;
+	    RtlZeroMemory(&irq_parms, sizeof irq_parms);
+	    irq_parms.Version = xsp->irq_version;
+	    irq_parms.ConnectionContext.InterruptObject = xsp->irq;
+	    IoDisconnectInterruptEx(&irq_parms);
 	    xsp->irq = 0;
       }
 
@@ -1313,6 +1321,9 @@ void remove_ise(DEVICE_OBJECT*fdo)
 
 /*
  * $Log$
+ * Revision 1.23  2009/04/06 19:18:28  steve-icarus
+ *  Use new compatible IoConnectInterruptEx API.
+ *
  * Revision 1.22  2009/04/03 18:21:17  steve
  *  Implement frame64 support in Windows driver.
  *  More robust error handling around root tables.

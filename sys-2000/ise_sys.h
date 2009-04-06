@@ -8,6 +8,7 @@
  */
 
 # include  <wdm.h>
+# include  <iointex.h>
 # include  "ucrif.h"
 # include  "ise_tables.h"
 # include  "isem.h"
@@ -147,9 +148,7 @@ struct instance_t {
       unsigned bar0_size;
 	/* These are our reference to the interrupt. */
       PKINTERRUPT irq;
-      KIRQL irql;
-      unsigned ivec;
-      KAFFINITY affinity;
+      ULONG irq_version;
 	/* Cookie for allocating common memory. */
       DMA_ADAPTER*dma;
 
@@ -331,6 +330,9 @@ extern void read_timeout(KDPC*dpc, void*ctx, void*arg1, void*arg2);
 
 /*
  * $Log$
+ * Revision 1.17  2009/04/06 19:18:28  steve-icarus
+ *  Use new compatible IoConnectInterruptEx API.
+ *
  * Revision 1.16  2009/04/03 18:21:17  steve
  *  Implement frame64 support in Windows driver.
  *  More robust error handling around root tables.

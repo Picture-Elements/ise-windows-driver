@@ -2,6 +2,7 @@
 TARGETNAME=ise
 TARGETPATH=.
 TARGETTYPE=DRIVER
+TARGETLIBS=$(DDK_LIB_PATH)\iointex.lib
 INCLUDES=../sys-common
 
 SOURCES=entry.c console.c dev_ise.c dev_jse.c dev_ejse.c frames.c ise.c ise_ioctl.c ise_read.c ise_write.c isex.c isex_run.c vers.rc
