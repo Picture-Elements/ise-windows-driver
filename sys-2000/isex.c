@@ -471,7 +471,7 @@ static NTSTATUS isex_make_map_frame(DEVICE_OBJECT*dev, IRP*irp)
 
       if (rc < 0) {
 	    IO_ERROR_LOG_PACKET*event;
-	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 3*sizeof(ULONG);
+	    unsigned psize = sizeof(IO_ERROR_LOG_PACKET) + 2*sizeof(ULONG);
 
 	    event = IoAllocateErrorLogEntry(xsp->fdo, (UCHAR)psize);
 	    event->ErrorCode = ISE_FRAME_MAP_FAILED;
@@ -482,7 +482,7 @@ static NTSTATUS isex_make_map_frame(DEVICE_OBJECT*dev, IRP*irp)
 	    event->DumpDataSize = 3*sizeof(ULONG);
 	    event->DumpData[0] = arg->frame_id;
 	    event->DumpData[1] = MmGetMdlByteCount(irp->MdlAddress);
-	    event->DumpData[2] = (ULONG)MmGetMdlVirtualAddress(irp->MdlAddress);
+	    event->DumpData[2] = 0;
 	    IoWriteErrorLogEntry(event);
 
 	    printk("isex%u: frame %u failed to map.\n",
@@ -977,6 +977,9 @@ void remove_isex(DEVICE_OBJECT*fdx)
 
 /*
  * $Log$
+ * Revision 1.20  2009/04/07 16:42:36  steve
+ *  Remove useless and nonportable message dump.
+ *
  * Revision 1.19  2009/04/03 18:21:17  steve
  *  Implement frame64 support in Windows driver.
  *  More robust error handling around root tables.
