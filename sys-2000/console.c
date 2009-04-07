@@ -101,7 +101,7 @@ NTSTATUS cons_read(DEVICE_OBJECT*dev, IRP*irp)
 }
 
 
-static void write_to_buffer(const char*data, unsigned ndata)
+static void write_to_buffer(const char*data, size_t ndata)
 {
       KIRQL save_irql;
       unsigned cur;
@@ -313,6 +313,9 @@ NTSTATUS create_console(DRIVER_OBJECT*drv)
 
 /*
  * $Log$
+ * Revision 1.6  2009/04/07 16:43:06  steve
+ *  Use size_t for sizes.
+ *
  * Revision 1.5  2002/04/10 23:20:27  steve
  *  Do not touch IRP after it is completed.
  *
