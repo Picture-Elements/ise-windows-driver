@@ -11,9 +11,11 @@ Signature="$Windows NT$"
 Provider=%picturel%
 Class=Image
 ClassGuid={6bdd1fc6-810f-11d0-bec7-08002be2092f}
-; CatalogFile=ise.cat
+;
+CatalogFile.ntx86=ise32.cat
+CatalogFile.ntamd64=ise64.cat
 
-DriverVer=1/21/2009,2.5.2009.406
+DriverVer=05/04/2009,2.5.2009.504
 
 ;
 ; Driver information
@@ -23,17 +25,20 @@ DriverVer=1/21/2009,2.5.2009.406
 ; This lists the manufacturers who provide software via this
 ; INF file, and binds to that manufacturer a section that
 ; lists the stuff that that manufacturer installs.
-%picturel%   = picturel.Mfg
+%picturel%   = picturel.Mfg,NTx86,NTamd64
 
 
-[picturel.Mfg]
 ; Picture Elements supports these device models. The hardware
 ; id is matched up with discovered boards in order to select
 ; one of these records. The record in turn references an
 ; install section.
-%picturel.ise%  = ise.Install, PCI\VEN_12C5&DEV_007f
-%picturel.jse%  = jse.Install, PCI\VEN_8086&DEV_b555&SUBSYS_008A12C5
-%picturel.ejse% = ejse.Install, PCI\VEN_12C5&DEV_0091
+[picturel.Mfg.NTx86]
+%picturel.ise%  = ise.Install.NTx86, PCI\VEN_12C5&DEV_007f
+%picturel.jse%  = jse.Install.NTx86, PCI\VEN_8086&DEV_b555&SUBSYS_008A12C5
+%picturel.ejse% = ejse.Install.NTx86, PCI\VEN_12C5&DEV_0091
+
+[picturel.Mfg.NTamd64]
+%picturel.ejse% = ejse.Install.NTamd64, PCI\VEN_12C5&DEV_0091
 
 
 [DestinationDirs]
@@ -57,13 +62,16 @@ DefaultDestDir=12
 [SourceDisksFiles]
 ; No cross-platform files for drivers.
 
-[SourceDisksFiles.x86]
-; The ise.sys file is the main payload, and is in the i386
+; The ise.sys file is the main payload, and is in the i386/amd64
 ; subdirectory of the media.
+[SourceDisksFiles.x86]
 ise.sys=1,i386
 
+[SourceDisksFiles.amd64]
+ise.sys=1,amd64
 
-[ise.Install.ntx86]
+
+[ise.Install.NTx86]
 CopyFiles=ise.Files.Driver.NTx86
 
 [ise.Install.NTx86.Services]
@@ -77,7 +85,7 @@ ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
 ServiceBinary  = %10%\system32\drivers\ise.sys
 
 
-[jse.Install.ntx86]
+[jse.Install.NTx86]
 CopyFiles=ise.Files.Driver.NTx86
 
 [jse.Install.NTx86.Services]
@@ -91,11 +99,17 @@ ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
 ServiceBinary  = %10%\system32\drivers\ise.sys
 
 
-[ejse.Install.ntx86]
+[ejse.Install.NTx86]
 CopyFiles=ise.Files.Driver.NTx86
 
 [ejse.Install.NTx86.Services]
 AddService = ise, 0x00000002 , ejse.Service, ise.EventLog
+
+[ejse.Install.NTamd64]
+CopyFiles=ise.Files.Driver.NTamd64
+
+[ejse.Install.NTamd64.Services]
+AddService = ise, 0x00000002 , ejse.Service.NTamd64, ise.EventLog
 
 [ejse.Service]
 DisplayName    = %picturel.ejse%
@@ -104,9 +118,19 @@ StartType      = 3                  ; SERVICE_DEMAND_START
 ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
 ServiceBinary  = %10%\system32\drivers\ise.sys
 
+[ejse.Service.NTamd64]
+DisplayName    = %picturel.ejse%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
+ServiceBinary  = %10%\system32\drivers\ise.sys
+
 
 ; In all cases, this is the driver file.
-[ise.Files.Driver.ntx86]
+[ise.Files.Driver.NTx86]
+ise.sys,,,2
+
+[ise.Files.Driver.NTamd64]
 ise.sys,,,2
 
 ; Same EventLog setup for ISE and JSE boards.
